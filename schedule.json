@@ -1,0 +1,20 @@
+[
+  {
+    "start": "09:00",
+    "end": "10:30",
+    "task": "Focus work",
+    "next": "Take a 10-minute break"
+  },
+  {
+    "start": "10:40",
+    "end": "12:00",
+    "task": "Continue working",
+    "next": "Lunch break"
+  },
+  {
+    "start": "13:30",
+    "end": "15:00",
+    "task": "Afternoon plan",
+    "next": "Take a 10-minute break"
+  }
+]

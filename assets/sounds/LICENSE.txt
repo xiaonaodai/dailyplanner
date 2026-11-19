@@ -1,0 +1,10 @@
+DailyPlanner sound assets
+
+File: soft-click.wav (processed copy of the CC0 button click)
+Creator/source: SpritePilot, Free UI Click and Menu Sound Effects
+Source page: https://spritepilot.com/free-game-assets/sound-effects/interface
+License: CC0 1.0 Universal (public domain dedication)
+License details: https://creativecommons.org/publicdomain/zero/1.0/
+The selected source sound is "Button click" (soft, clean click, 0.15 s). The app
+uses it for end-of-task reminders; time wheels are silent. The WAV was gently
+filtered and its level reduced for a softer reminder.
