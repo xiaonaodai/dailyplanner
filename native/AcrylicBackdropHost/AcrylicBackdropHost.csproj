@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net472</TargetFramework>
+    <OutputType>WinExe</OutputType>
+    <UseWindowsForms>true</UseWindowsForms>
+    <PlatformTarget>x64</PlatformTarget>
+    <Prefer32Bit>false</Prefer32Bit>
+    <AssetTargetFallback>$(AssetTargetFallback);uap10.0</AssetTargetFallback>
+    <RuntimeIdentifier>win10-x64</RuntimeIdentifier>
+    <AssemblyName>AcrylicBackdropHost</AssemblyName>
+    <RootNamespace>AcrylicBackdropHost</RootNamespace>
+    <LangVersion>latest</LangVersion>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Windows.SDK.Contracts" Version="10.0.22621.2" />
+    <PackageReference Include="Win2D.uwp" Version="1.22.0" />
+    <PackageReference Include="System.Numerics.Vectors" Version="4.5.0" />
+  </ItemGroup>
+</Project>

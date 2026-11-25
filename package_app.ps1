@@ -4,12 +4,22 @@ $entryPoint = Join-Path $appDirectory 'timer_note.pyw'
 $scheduleFile = Join-Path $appDirectory 'schedule.json'
 $settingsFile = Join-Path $appDirectory 'settings.json'
 $soundDirectory = Join-Path $appDirectory 'assets\sounds'
+$nativeProject = Join-Path $appDirectory 'native\AcrylicBackdropHost\AcrylicBackdropHost.csproj'
+$nativeOutput = Join-Path $appDirectory 'native\AcrylicBackdropHost\rounded-glass'
 $pythonCommand = Get-Command python.exe -ErrorAction Stop
 $pythonPath = $pythonCommand.Source
+$dotnetCommand = Get-Command dotnet -ErrorAction Stop
+$dotnetPath = $dotnetCommand.Source
 $releaseDirectory = Join-Path $appDirectory 'release'
 $stageRoot = Join-Path $env:TEMP ('DailyPlanner-Stage-' + [guid]::NewGuid().ToString('N'))
 $stageDist = Join-Path $stageRoot 'dist'
 $workDirectory = Join-Path $stageRoot 'work'
+
+& $dotnetPath build $nativeProject -c Release -o $nativeOutput
+if ($LASTEXITCODE -ne 0) { throw 'Could not build the Windows acrylic backdrop host.' }
+if (-not (Test-Path -LiteralPath (Join-Path $nativeOutput 'AcrylicBackdropHost.exe'))) {
+    throw 'The Windows acrylic backdrop host executable was not produced.'
+}
 
 & $pythonPath -m pip install --user pyinstaller pystray pillow
 if ($LASTEXITCODE -ne 0) { throw 'Could not install packaging dependencies.' }
@@ -29,6 +39,7 @@ New-Item -ItemType Directory -Path $stageDist -Force | Out-Null
     --add-data "$scheduleFile;." `
     --add-data "$settingsFile;." `
     --add-data "$soundDirectory;assets\sounds" `
+    --add-data "$nativeOutput;native\AcrylicBackdropHost" `
     $entryPoint
 if ($LASTEXITCODE -ne 0) { throw 'PyInstaller failed.' }
 
@@ -45,6 +56,3 @@ if (Test-Path -LiteralPath $releaseBundle) {
 }
 Copy-Item -Path $bundleSource -Destination $releaseBundle -Recurse -Force
 Write-Output "Packaged app files: $releaseBundle"
-
-
-

@@ -7,3 +7,17 @@ release/
 .env
 .vscode/
 .idea/
+
+# Local backups, diagnostics and native build output
+backups/
+*.log
+native/**/bin/
+native/**/obj/
+native/AcrylicBackdropHost/anchored/
+native/AcrylicBackdropHost/current/
+native/AcrylicBackdropHost/input-surface/
+native/AcrylicBackdropHost/rounded-input/
+native/AcrylicBackdropHost/tk-input/
+native/AcrylicBackdropHost/visual-only/
+native/AcrylicBackdropHost/dwm-round/
+native/AcrylicBackdropHost/rounded-glass/

@@ -14,6 +14,8 @@ from datetime import datetime
 import json
 import os
 import shutil
+import sys
+import subprocess
 import threading
 import ctypes.wintypes
 
@@ -31,6 +33,7 @@ for data_name in ("schedule.json", "settings.json"):
             pass
 DATA_FILE = os.path.join(USER_DATA_DIR, "schedule.json")
 SETTINGS_FILE = os.path.join(USER_DATA_DIR, "settings.json")
+STATS_FILE = os.path.join(USER_DATA_DIR, "stats.json")
 LANGUAGE_FILE = os.path.join(USER_DATA_DIR, "installer_language.txt")
 DEFAULTS = [
     {"start": "09:00", "end": "10:30", "task": "专注工作", "next": "休息 10 分钟"},
@@ -48,6 +51,12 @@ EDGE = "#D8C98D"
 ACTIVE = "#FFF4C9"
 WHITE = "#FFFCED"
 FONT = "Microsoft YaHei UI"
+ACRYLIC_SURFACE = "#E8EBEF"
+ACRYLIC_KEY = "#D2D5D8"
+ACRYLIC_DRAG_SURFACE = ACRYLIC_KEY
+ACRYLIC_CLEAR_KEY = "#FE01FD"
+ACRYLIC_HOST_MESSAGE = 0x8042
+DEFAULT_ACRYLIC_BLUR = 18
 
 
 def mix_color(first, second, amount):
@@ -59,6 +68,13 @@ def mix_color(first, second, amount):
 def set_palette(base, frame_color=None):
     global PAPER, TOP, INK, MUTED, ACCENT, LINE, EDGE, ACTIVE, WHITE
     PAPER = base.upper()
+    if PAPER == ACRYLIC_KEY:
+        TOP = EDGE = ACTIVE = WHITE = PAPER
+        INK = "#20252B"
+        MUTED = "#59636E"
+        ACCENT = "#A66B1C"
+        LINE = "#B9BEC2"
+        return
     rgb = tuple(int(PAPER[i:i+2], 16) for i in (1, 3, 5))
     luminance = sum(channel * weight for channel, weight in zip(rgb, (0.2126, 0.7152, 0.0722))) / 255
     shade = "#000000" if luminance > 0.52 else "#FFFFFF"
@@ -150,8 +166,31 @@ class TimeWheel(tk.Canvas):
             self.step(1 if event.delta > 0 else -1)
 
 class TimerNote:
+    @staticmethod
+    def _configure_dpi_scaling(root):
+        if os.name != "nt":
+            return
+        try:
+            user32 = ctypes.windll.user32
+            dpi = 0
+            get_dpi_for_window = getattr(user32, "GetDpiForWindow", None)
+            if get_dpi_for_window is not None:
+                get_dpi_for_window.argtypes = [ctypes.c_void_p]
+                get_dpi_for_window.restype = ctypes.c_uint
+                dpi = get_dpi_for_window(ctypes.c_void_p(root.winfo_id()))
+            if not dpi:
+                get_dpi_for_system = getattr(user32, "GetDpiForSystem", None)
+                if get_dpi_for_system is not None:
+                    get_dpi_for_system.restype = ctypes.c_uint
+                    dpi = get_dpi_for_system()
+            if dpi:
+                root.tk.call("tk", "scaling", float(dpi) / 72.0)
+        except (AttributeError, OSError, tk.TclError, ValueError):
+            pass
+
     def __init__(self, root):
         self.root = root
+        self._configure_dpi_scaling(root)
         self.root.title("今日计划")
         self.root.overrideredirect(True)
         self.root.configure(bg=PAPER)
@@ -165,7 +204,19 @@ class TimerNote:
         self.settings_file = SETTINGS_FILE
         self.base_color = "#FFF2B8"
         self.frame_color = None
+        self.opacity = 1.0
+        self.glass_mode = False
+        self.glass_style = "high_transparency"
+        self.glass_text = None
+        self._text_after = None
+        self.glass_native = False
+        self.acrylic_blur = DEFAULT_ACRYLIC_BLUR
+        self.acrylic_helper_process = None
+        self.acrylic_helper_hwnd = 0
+        self.acrylic_helper_pending = False
         self.language = "zh"
+        self.report_time = "21:00"
+        self.report_notified_date = ""
         self.language_var = tk.StringVar(master=self.root, value="zh")
         self.layout_defaults = {
             "clock": [0.05, 0.0, 0.90, 0.06],
@@ -175,7 +226,6 @@ class TimerNote:
         }
         self.layout = {name: values.copy() for name, values in self.layout_defaults.items()}
         self.layout_mode = False
-        self.layout_bindings = []
         self.layout_drag = None
         try:
             with open(self.settings_file, "r", encoding="utf-8") as file:
@@ -188,6 +238,16 @@ class TimerNote:
             if isinstance(frame, str) and len(frame) == 7 and frame.startswith("#"):
                 int(frame[1:], 16)
                 self.frame_color = frame
+            self.glass_mode = bool(saved.get("acrylic_enabled", saved.get("glass_mode", False)))
+            saved_glass_style = saved.get("glass_style", "high_transparency")
+            self.glass_style = {
+                "clear": "high_transparency", "frosted": "mica",
+                "high_transparency": "high_transparency", "mica": "mica",
+            }.get(saved_glass_style, "high_transparency")
+            try:
+                self.opacity = max(0.60, min(1.0, float(saved.get("opacity", 1.0))))
+            except (TypeError, ValueError):
+                self.opacity = 1.0
             if saved.get("language") in ("zh", "en"):
                 self.language = saved["language"]
                 self.language_var.set(self.language)
@@ -199,6 +259,14 @@ class TimerNote:
                     self.language_var.set(install_language)
             except OSError:
                 pass
+            report_time = saved.get("report_time", "21:00")
+            if isinstance(report_time, str):
+                try:
+                    parse_time(report_time)
+                    self.report_time = report_time
+                except ValueError:
+                    pass
+            self.report_notified_date = str(saved.get("report_notified_date", ""))
             saved_window = saved.get("window_geometry")
             if isinstance(saved_window, list) and len(saved_window) == 4:
                 try:
@@ -230,9 +298,16 @@ class TimerNote:
             x = min(max(0, saved_x), max(0, screen_w - width))
             y = min(max(0, saved_y), max(0, screen_h - height))
             self.root.geometry(f"{width}x{height}+{x}+{y}")
-        set_palette(self.base_color, self.frame_color)
+        set_palette(*self._effective_palette_colors())
+        self.root.configure(bg=PAPER)
         self.root.attributes("-topmost", True)
+        self.root.attributes("-alpha", 1.0 if self.glass_mode else self.opacity)
         self.plans = self.load()
+        self.stats = self._load_stats()
+        self.fishing = False
+        self.stats_last_at = datetime.now()
+        self.stats_bucket = self._current_bucket(self.stats_last_at)
+        self.stats_last_saved = self.stats_last_at
         self.selected_plans = set()
         self.selection_mode = False
         self.pin = tk.BooleanVar(value=True)
@@ -249,6 +324,7 @@ class TimerNote:
         self.list_rows = []
         self.palette_window = None
         self.palette_swatches = {}
+        self.settings_menu = None
         self._picker_active = False
         self._picker_mouse_was_down = True
         self.picker_target = "paper"
@@ -260,6 +336,8 @@ class TimerNote:
         self._tray_icon = None
         self._tray_icon_added = False
         self.build()
+        if self.glass_mode:
+            self.root.after(180, self._apply_glass_effect)
         self.refresh()
         if self.language != "zh":
             self.set_language(self.language)
@@ -286,13 +364,207 @@ class TimerNote:
         self.rendered_minute = None
         self.draw_list()
         return True
+
+    def _load_stats(self):
+        try:
+            with open(STATS_FILE, "r", encoding="utf-8") as file:
+                raw = json.load(file)
+            if isinstance(raw, dict):
+                return raw
+        except (OSError, ValueError, TypeError):
+            pass
+        return {}
+
+    def _save_stats(self):
+        try:
+            with open(STATS_FILE, "w", encoding="utf-8") as file:
+                json.dump(self.stats, file, ensure_ascii=False, indent=2)
+            self.stats_last_saved = datetime.now()
+        except OSError:
+            pass
+
+    def _current_bucket(self, now):
+        minute = now.strftime("%H:%M")
+        active = next((p for p in self.plans if p.get("start", "") <= minute < p.get("end", "")), None)
+        if active is None or active.get("kind") == "rest":
+            return "rest"
+        return "fishing" if getattr(self, "fishing", False) else "work"
+
+    def _account_stats(self, now, new_bucket):
+        cursor = getattr(self, "stats_last_at", now)
+        bucket = getattr(self, "stats_bucket", new_bucket)
+        while cursor.date() < now.date():
+            midnight = datetime.combine(cursor.date().fromordinal(cursor.date().toordinal() + 1), datetime.min.time())
+            self._add_stat_seconds(cursor.date().isoformat(), bucket, (midnight - cursor).total_seconds())
+            cursor = midnight
+            bucket = self._current_bucket(cursor)
+        self._add_stat_seconds(now.date().isoformat(), bucket, max(0.0, (now - cursor).total_seconds()))
+        self.stats_last_at = now
+        self.stats_bucket = new_bucket
+        if (now - getattr(self, "stats_last_saved", now)).total_seconds() >= 30:
+            self._save_stats()
+
+    def _add_stat_seconds(self, day, bucket, amount):
+        if bucket not in ("work", "fishing", "rest") or amount <= 0:
+            return
+        values = self.stats.setdefault(day, {"work": 0.0, "fishing": 0.0, "rest": 0.0})
+        values[bucket] = float(values.get(bucket, 0.0)) + amount
+
+    def _format_duration(self, seconds):
+        total_seconds = int(max(0, seconds))
+        hours, remainder = divmod(total_seconds, 3600)
+        minutes, secs = divmod(remainder, 60)
+        return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+
+    def toggle_fishing(self):
+        now = datetime.now()
+        self._account_stats(now, self._current_bucket(now))
+        self.fishing = not self.fishing
+        self.stats_bucket = self._current_bucket(now)
+        self._update_fishing_button()
+        self.refresh()
+
+    def _update_fishing_button(self, active=None):
+        if not hasattr(self, "fishing_button"):
+            return
+        if active is None:
+            minute = datetime.now().strftime("%H:%M")
+            active = next((p for p in self.plans if p.get("start", "") <= minute < p.get("end", "")), None)
+        if active and active.get("kind") != "rest" and getattr(self, "fishing_hovered", False):
+            self.fishing_button.pack(side="left", padx=(12, 0))
+            self.fishing_button.configure(
+                text=("恢复工作" if self.fishing else "摸鱼") if self.language == "zh"
+                else ("Back" if self.fishing else "Goof off"))
+        else:
+            self.fishing_button.pack_forget()
+
+    def _show_fishing_button(self, _event=None):
+        self.fishing_hovered = True
+        if getattr(self, "fishing_hide_after", None):
+            try:
+                self.root.after_cancel(self.fishing_hide_after)
+            except tk.TclError:
+                pass
+            self.fishing_hide_after = None
+        self._update_fishing_button()
+
+    def _schedule_hide_fishing_button(self, _event=None):
+        if getattr(self, "fishing_hide_after", None):
+            try:
+                self.root.after_cancel(self.fishing_hide_after)
+            except tk.TclError:
+                pass
+        self.fishing_hide_after = self.root.after(350, self._hide_fishing_button)
+
+    def _hide_fishing_button(self):
+        self.fishing_hovered = False
+        self.fishing_hide_after = None
+        self._update_fishing_button()
+
+    def choose_report_time(self):
+        win = tk.Toplevel(self.root)
+        win.title("日报提醒时间" if self.language == "zh" else "Report reminder time")
+        win.configure(bg=PAPER)
+        win.resizable(False, False)
+        win.transient(self.root)
+        win.grab_set()
+        body = tk.Frame(win, bg=PAPER, padx=24, pady=20)
+        body.pack(fill="both", expand=True)
+        tk.Label(body, text="每天在这个时间提醒查看日报" if self.language == "zh"
+                 else "Remind me about the report at this time",
+                 bg=PAPER, fg=INK, font=(FONT, 10)).pack(pady=(0, 12))
+        hour, minute = map(int, self.report_time.split(":"))
+        hour_var, minute_var = tk.IntVar(value=hour), tk.IntVar(value=minute)
+        row = tk.Frame(body, bg=PAPER)
+        row.pack()
+        tk.Spinbox(row, from_=0, to=23, wrap=True, width=3, format="%02.0f",
+                   textvariable=hour_var, font=("Segoe UI", 16), justify="center").pack(side="left")
+        tk.Label(row, text=":", bg=PAPER, fg=INK, font=("Segoe UI", 16, "bold")).pack(side="left")
+        tk.Spinbox(row, from_=0, to=59, wrap=True, width=3, format="%02.0f",
+                   textvariable=minute_var, font=("Segoe UI", 16), justify="center").pack(side="left")
+        actions = tk.Frame(body, bg=PAPER)
+        actions.pack(fill="x", pady=(18, 0))
+        tk.Button(actions, text="取消" if self.language == "zh" else "Cancel",
+                  command=win.destroy, bg=TOP, relief="flat", padx=14).pack(side="right", padx=(8, 0))
+        def save_time():
+            self.report_time = f"{hour_var.get() % 24:02d}:{minute_var.get() % 60:02d}"
+            self._save_settings()
+            win.destroy()
+        tk.Button(actions, text="保存" if self.language == "zh" else "Save",
+                  command=save_time, bg=ACCENT, fg="white", relief="flat", padx=16).pack(side="right")
+        win.update_idletasks()
+        x = self.root.winfo_rootx() + (self.root.winfo_width() - win.winfo_width()) // 2
+        y = self.root.winfo_rooty() + (self.root.winfo_height() - win.winfo_height()) // 2
+        win.geometry(f"+{x}+{y}")
+        self._apply_window_material(win)
+
+    def show_daily_report(self, day=None):
+        if not day or day == datetime.now().date().isoformat():
+            now = datetime.now()
+            self._account_stats(now, self._current_bucket(now))
+            self._save_stats()
+        day = day or datetime.now().date().isoformat()
+        values = self.stats.get(day, {})
+        win = tk.Toplevel(self.root)
+        win.title("统计日报" if self.language == "zh" else "Daily report")
+        win.configure(bg=PAPER)
+        win.resizable(False, False)
+        win.transient(self.root)
+        win.attributes("-topmost", True)
+        card = tk.Frame(win, bg=PAPER, padx=28, pady=24,
+                        highlightthickness=1, highlightbackground=EDGE)
+        card.pack(fill="both", expand=True)
+        title = (f"{day} 时间日报" if self.language == "zh" else f"Time report · {day}")
+        tk.Label(card, text=title, bg=PAPER, fg=INK,
+                 font=(FONT, 14, "bold")).pack(anchor="w", pady=(0, 18))
+        rows = (("work", "有效工作" if self.language == "zh" else "Focused work", ACCENT),
+                ("fishing", "摸鱼" if self.language == "zh" else "Goofing off", "#7D8A91"),
+                ("rest", "休息" if self.language == "zh" else "Rest", "#788A63"))
+        value_labels = {}
+        for key, label, color in rows:
+            line = tk.Frame(card, bg=PAPER)
+            line.pack(fill="x", pady=7)
+            tk.Label(line, text=label, bg=PAPER, fg=MUTED,
+                     font=(FONT, 10)).pack(side="left")
+            value_label = tk.Label(line, text=self._format_duration(values.get(key, 0)),
+                                   bg=PAPER, fg=color, font=("Segoe UI", 13, "bold"))
+            value_label.pack(side="right")
+            value_labels[key] = value_label
+        tk.Label(card, text="仅统计应用运行期间；计划空档与休息段计入休息。" if self.language == "zh"
+                 else "Counts time while the app is running; gaps and rest blocks count as rest.",
+                 bg=PAPER, fg=MUTED, font=(FONT, 8), wraplength=390,
+                 justify="left").pack(anchor="w", pady=(16, 0))
+        tk.Button(card, text="关闭" if self.language == "zh" else "Close",
+                  command=win.destroy, bg=TOP, fg=INK, activebackground=LINE, relief="flat",
+                  padx=18, pady=7).pack(anchor="e", pady=(16, 0))
+        win.update_idletasks()
+        x = self.root.winfo_rootx() + (self.root.winfo_width() - win.winfo_width()) // 2
+        y = self.root.winfo_rooty() + (self.root.winfo_height() - win.winfo_height()) // 2
+        win.geometry(f"+{x}+{y}")
+        self._apply_window_material(win)
+
+        def refresh_report_values():
+            if not win.winfo_exists():
+                return
+            if day == datetime.now().date().isoformat():
+                now = datetime.now()
+                self._account_stats(now, self._current_bucket(now))
+                values = self.stats.get(day, {})
+                for key, value_label in value_labels.items():
+                    value_label.configure(text=self._format_duration(values.get(key, 0)))
+            win.after(1000, refresh_report_values)
+
+        win.after(1000, refresh_report_values)
+
     def build(self):
         self.time_font_regular = tkfont.Font(self.root, family="Segoe UI", size=10)
         self.time_font_bold = tkfont.Font(self.root, family="Segoe UI", size=10, weight="bold")
         time_sample = "00:00 – 00:00"
         self.time_column_width = max(self.time_font_regular.measure(time_sample),
                                      self.time_font_bold.measure(time_sample)) + 8
-        self.shell = tk.Frame(self.root, bg=PAPER, highlightthickness=1 if self.frame_color else 0, highlightbackground=EDGE)
+        self.shell = tk.Frame(self.root, bg=PAPER,
+                              highlightthickness=1 if self.frame_color and not self.glass_mode else 0,
+                              highlightbackground=EDGE)
         self.shell.pack(fill="both", expand=True)
 
         self.header_slot = tk.Frame(self.shell, bg=PAPER, height=72)
@@ -300,6 +572,9 @@ class TimerNote:
         self.header_slot.pack_propagate(False)
         self.header = tk.Frame(self.header_slot, bg=TOP, height=72)
         self.header.place(x=0, y=0, relwidth=1, height=72)
+        self.drag_strip = tk.Frame(self.header, bg=ACRYLIC_DRAG_SURFACE if self.glass_mode else TOP,
+                                   height=8, cursor="fleur")
+        self.drag_strip.place(x=0, y=0, relwidth=1, height=8)
         self.header_visible = True
         self.chrome_progress = 1.0
         self.chrome_animation = None
@@ -307,16 +582,16 @@ class TimerNote:
                                     font=(FONT, 11, "bold"), padx=16)
         self.title_label.pack(side="left", fill="y")
         self.close_button = tk.Button(self.header, text="×", command=self.close_app,
-                                      bg=TOP, fg=MUTED, activebackground="#EBDD9C",
+                                      bg=TOP, fg=MUTED, activebackground=TOP,
                                       relief="flat", bd=0, font=("Segoe UI", 14), width=3)
-        self.close_button.pack(side="right", fill="y")
+        self.close_button.pack(side="right", fill="y", padx=(0, 24))
         self.pin_button = tk.Checkbutton(self.header, text="悬浮", variable=self.pin,
-                                         command=lambda: self.root.attributes("-topmost", self.pin.get()),
+                                         command=self._apply_pin,
                                          bg=TOP, fg=MUTED, activebackground=TOP, selectcolor=TOP,
                                          bd=0, font=(FONT, 9))
         self.pin_button.pack(side="right", padx=(0, 5))
         self.settings_button = tk.Button(self.header, text="•••", command=self.show_settings_menu,
-                                         bg=TOP, fg=MUTED, activebackground="#EBDD9C",
+                                         bg=TOP, fg=MUTED, activebackground=TOP,
                                          relief="flat", bd=0, font=("Segoe UI", 12), width=4)
         self.settings_button.pack(side="right", fill="y")
         for widget in (self.header, self.title_label):
@@ -332,15 +607,31 @@ class TimerNote:
 
         self.summary = tk.Frame(content, bg=PAPER)
         self.summary.place(relx=self.layout["summary"][0], rely=self.layout["summary"][1], relwidth=self.layout["summary"][2], relheight=self.layout["summary"][3])
-        self.state = tk.Label(self.summary, text="", bg=PAPER, fg=ACCENT,
+        self.status_row = tk.Frame(self.summary, bg=PAPER)
+        self.status_row.pack(fill="x", anchor="w")
+        self.fishing_hovered = False
+        self.fishing_hide_after = None
+        self.state = tk.Label(self.status_row, text="", bg=PAPER, fg=ACCENT,
                               font=(FONT, 9), anchor="w")
-        self.state.pack(anchor="w")
+        self.state.pack(side="left", anchor="w")
+        self.fishing_button = tk.Button(self.status_row, text="摸鱼", command=self.toggle_fishing,
+                                        bg=TOP, fg=INK, activebackground=LINE,
+                                        relief="flat", bd=0, font=(FONT, 8), padx=10, pady=2)
+        self.status_row.bind("<Enter>", self._show_fishing_button)
+        self.status_row.bind("<Leave>", self._schedule_hide_fishing_button)
+        self.state.bind("<Enter>", self._show_fishing_button)
+        self.state.bind("<Leave>", self._schedule_hide_fishing_button)
+        self.fishing_button.bind("<Enter>", self._show_fishing_button)
+        self.fishing_button.bind("<Leave>", self._schedule_hide_fishing_button)
         self.task = tk.Label(self.summary, text="", bg=PAPER, fg=INK,
                              font=(FONT, 16, "bold"), wraplength=320, justify="left", anchor="w")
         self.task.pack(anchor="w", pady=(6, 10))
         self.period = tk.Label(self.summary, text="", bg=PAPER, fg=MUTED,
                                font=(FONT, 9), anchor="w")
         self.period.pack(anchor="w", pady=(2, 4))
+        for hover_target in (self.summary, self.task, self.period):
+            hover_target.bind("<Enter>", self._show_fishing_button)
+            hover_target.bind("<Leave>", self._schedule_hide_fishing_button)
         self.dial = tk.Canvas(content, width=176, height=176, bg=PAPER, highlightthickness=0)
         self.dial.place(relx=self.layout["dial"][0], rely=self.layout["dial"][1], width=176, height=176)
         self.summary.bind("<Configure>", lambda event: self.task.configure(wraplength=max(120, event.width - 8)))
@@ -377,22 +668,48 @@ class TimerNote:
                                           bg=TOP, fg=MUTED, activebackground=LINE, relief="flat", bd=0,
                                           font=(FONT, 10), padx=16)
         self.selection_button.pack(side="right", fill="y")
+        if self.glass_mode:
+            self.header.configure(bg=ACRYLIC_DRAG_SURFACE)
+            self.footer.configure(bg=ACRYLIC_DRAG_SURFACE)
+            self._apply_acrylic_control_surfaces()
         self.draw_list()
         self.install_resize_handles()
+        self.install_drag_targets()
+        for name, target in self.layout_targets.items():
+            tag = self._tag_layout_target(name, target)
+            self.root.bind_class(tag, "<ButtonPress-1>",
+                                 lambda event, key=name: self._layout_drag_start(event, key))
+            self.root.bind_class(tag, "<B1-Motion>", self._layout_drag_motion)
+            self.root.bind_class(tag, "<ButtonRelease-1>", self._finish_layout_drag)
         self.root.bind_all("<Enter>", self.on_mouse_enter, add="+")
         self.root.bind_all("<Leave>", self.on_mouse_leave, add="+")
         self.root.bind("<Configure>", self.queue_rounded_region, add="+")
+        self.root.bind("<Configure>", self._on_main_window_configure, add="+")
         self.root.after(180, self.apply_rounded_region)
         self.root.after(1000, self.hide_chrome)
         self.root.after(500, self.install_tray_icon)
 
     def show_settings_menu(self):
+        if self.settings_menu is not None:
+            try:
+                self.settings_menu.unpost()
+                self.settings_menu.grab_release()
+                self.settings_menu.destroy()
+            except tk.TclError:
+                pass
+            self.settings_menu = None
         menu = tk.Menu(self.root, tearoff=False, font=(FONT, 9))
+        self.settings_menu = menu
         menu.add_command(label=("保存布局" if self.layout_mode else "编辑布局") if self.language == "zh"
                          else ("Save layout" if self.layout_mode else "Edit layout"),
                          command=self.toggle_layout_mode)
         menu.add_command(label="调色盘" if self.language == "zh" else "Color palette",
                          command=self.open_color_palette)
+        menu.add_command(label="统计日报" if self.language == "zh" else "Daily report",
+                         command=self.show_daily_report)
+        menu.add_command(label=(f"日报提醒时间（{self.report_time}）" if self.language == "zh"
+                                else f"Report reminder time ({self.report_time})"),
+                         command=self.choose_report_time)
         language_menu = tk.Menu(menu, tearoff=False, font=(FONT, 9))
         language_menu.add_radiobutton(label="中文", value="zh", variable=self.language_var,
                                       command=lambda: self.set_language("zh"))
@@ -403,12 +720,15 @@ class TimerNote:
             menu.tk_popup(self.settings_button.winfo_rootx(),
                           self.settings_button.winfo_rooty() + self.settings_button.winfo_height())
         finally:
-            menu.grab_release()
+            try:
+                menu.grab_release()
+            except tk.TclError:
+                pass
 
     def set_language(self, language):
         self.language = language
         self.language_var.set(language)
-        title = ("拖动高亮区，完成后保存" if language == "zh" else "Drag a highlighted area, then save") \
+        title = ("拖动高亮区，完成后保存" if language == "zh" else "Editing") \
             if self.layout_mode else ("今日计划" if language == "zh" else "Today's Plan")
         self.title_label.configure(text=title)
         self.pin_button.configure(text="悬浮" if language == "zh" else "Float")
@@ -424,6 +744,8 @@ class TimerNote:
         if self._tray_icon is not None:
             self._tray_icon.title = "今日计划" if language == "zh" else "Today's Plan"
         self._update_delete_button()
+        self._sync_opacity_control()
+        self._sync_glass_style_control()
         self.list_signature = None
         self.rendered_minute = None
         self._save_settings()
@@ -433,6 +755,29 @@ class TimerNote:
         for child in parent.winfo_children():
             yield child
             yield from self.walk_widgets(child)
+
+    def _effective_palette_colors(self):
+        if self.glass_mode:
+            return ACRYLIC_KEY, ACRYLIC_KEY
+        return self.base_color, self.frame_color
+
+    def _apply_acrylic_control_surfaces(self, parent=None):
+        parent = parent or self.root
+        for widget in self.walk_widgets(parent):
+            try:
+                if str(widget.winfo_toplevel()) != str(parent) or widget is self.shell:
+                    continue
+                has_click_binding = bool(widget.bind("<Button-1>")
+                                         or widget.bind("<ButtonPress-1>"))
+                if (isinstance(widget, (tk.Button, tk.Checkbutton, tk.Radiobutton, tk.Scale))
+                        or has_click_binding):
+                    for option in ("background", "activebackground", "selectcolor"):
+                        try:
+                            widget.configure(**{option: ACRYLIC_DRAG_SURFACE})
+                        except tk.TclError:
+                            pass
+            except tk.TclError:
+                pass
 
     def apply_color(self, color, target="paper"):
         try:
@@ -446,9 +791,13 @@ class TimerNote:
             self.base_color = color.upper()
         else:
             self.frame_color = color.upper()
-        set_palette(self.base_color, self.frame_color)
+        set_palette(*self._effective_palette_colors())
         new = {name: globals()[name] for name in old}
-        color_map = {old[name].lower(): new[name] for name in old}
+        color_map = {}
+        for name in old:
+            # Several acrylic surfaces share one gray. Restore paper first;
+            # toolbar widgets receive their own color below.
+            color_map.setdefault(old[name].lower(), new[name])
         for widget in [self.root, *self.walk_widgets(self.root)]:
             for option in ("background", "activebackground", "selectcolor", "highlightbackground",
                            "foreground", "activeforeground"):
@@ -459,11 +808,28 @@ class TimerNote:
                 except tk.TclError:
                     pass
         self.root.configure(bg=PAPER)
-        self.shell.configure(bg=PAPER, highlightthickness=1 if self.frame_color else 0, highlightbackground=EDGE)
+        self.shell.configure(bg=PAPER,
+                             highlightthickness=1 if self.frame_color and not self.glass_mode else 0,
+                             highlightbackground=EDGE)
         self.header_slot.configure(bg=PAPER)
         self.footer_slot.configure(bg=PAPER)
         self.header.configure(bg=TOP)
         self.footer.configure(bg=TOP)
+        # Keep the toolbar surfaces visually continuous after palette changes.
+        # Tk widgets keep their own background colors, so recolor every child
+        # explicitly instead of relying only on the parent frame's background.
+        for bar in (self.header, self.footer):
+            for widget in (bar, *self.walk_widgets(bar)):
+                for option in ("background", "activebackground", "selectcolor", "highlightbackground"):
+                    try:
+                        widget.configure(**{option: TOP})
+                    except tk.TclError:
+                        pass
+        self.drag_strip.configure(bg=ACRYLIC_DRAG_SURFACE if self.glass_mode else TOP)
+        if self.glass_mode:
+            self.header.configure(bg=ACRYLIC_DRAG_SURFACE)
+            self.footer.configure(bg=ACRYLIC_DRAG_SURFACE)
+            self._apply_acrylic_control_surfaces()
         self.dial.configure(bg=PAPER)
         self.dial.delete("all")
         self.dial_items = None
@@ -483,7 +849,11 @@ class TimerNote:
                         self.root.winfo_width(), self.root.winfo_height()]
             with open(self.settings_file, "w", encoding="utf-8") as file:
                 json.dump({"paper_color": self.base_color, "frame_color": self.frame_color,
-                           "language": self.language,
+                           "opacity": self.opacity,
+                           "glass_mode": self.glass_mode,
+                           "glass_style": self.glass_style,
+                           "language": self.language, "report_time": self.report_time,
+                           "report_notified_date": self.report_notified_date,
                            "layout": self.layout, "window_geometry": geometry},
                           file, ensure_ascii=False, indent=2)
             with open(LANGUAGE_FILE, "w", encoding="utf-8") as file:
@@ -518,7 +888,7 @@ class TimerNote:
         if not self.layout_mode:
             self.layout_mode = True
             self.title_label.configure(text="拖动高亮区，完成后保存" if self.language == "zh"
-                                       else "Drag a highlighted area, then save")
+                                       else "Editing")
             self.layout_button.configure(text="保存布局" if self.language == "zh" else "Save layout")
             self.layout_reset_button.pack(side="left", fill="y")
             self.layout_styles = {}
@@ -528,25 +898,10 @@ class TimerNote:
                                             widget.cget("highlightbackground"),
                                             widget.cget("cursor"))
                 widget.configure(highlightthickness=2, highlightbackground=ACCENT, cursor="fleur")
-                candidates = [widget, *self.walk_widgets(widget)]
-                for candidate in candidates:
-                    press_id = candidate.bind(
-                        "<ButtonPress-1>", lambda event, key=name: self._layout_drag_start(event, key), add="+")
-                    motion_id = candidate.bind("<B1-Motion>", self._layout_drag_motion, add="+")
-                    release_id = candidate.bind("<ButtonRelease-1>", self._finish_layout_drag, add="+")
-                    self.layout_bindings.extend(((candidate, "<ButtonPress-1>", press_id),
-                                                 (candidate, "<B1-Motion>", motion_id),
-                                                 (candidate, "<ButtonRelease-1>", release_id)))
             return
 
         self.layout_mode = False
         self.layout_drag = None
-        for widget, sequence, func_id in self.layout_bindings:
-            try:
-                widget.unbind(sequence, func_id)
-            except tk.TclError:
-                pass
-        self.layout_bindings.clear()
         for name, widget in self.layout_targets.items():
             thickness, outline, cursor = self.layout_styles.get(name, (0, PAPER, ""))
             widget.configure(highlightthickness=thickness, highlightbackground=outline, cursor=cursor)
@@ -554,6 +909,14 @@ class TimerNote:
         self.layout_button.configure(text="编辑布局" if self.language == "zh" else "Edit layout")
         self.layout_reset_button.pack_forget()
         self._save_layout_settings()
+
+    def _tag_layout_target(self, name, target):
+        # In edit mode layout gestures take priority over window and row bindings.
+        tag = f"PlannerLayout_{name}"
+        for child in (target, *self.walk_widgets(target)):
+            if tag not in child.bindtags():
+                child.bindtags((tag, *child.bindtags()))
+        return tag
 
     def _layout_drag_start(self, event, name):
         if not self.layout_mode:
@@ -576,9 +939,19 @@ class TimerNote:
         item_width = max(original[2], widget.winfo_width() / width)
         item_height = max(original[3], widget.winfo_height() / height)
         x = min(max(0.0, original[0] + (event.x_root - start_x) / width), 1.0 - item_width)
+        if name == "listbox":
+            # Empty space below the rows can shrink as the list moves down.
+            rows = widget.winfo_children()
+            first_row_height = rows[0].winfo_reqheight() if rows else 32
+            item_height = min(original[3], (first_row_height + 4) / height)
         y = min(max(0.0, original[1] + (event.y_root - start_y) / height), 1.0 - item_height)
-        self.layout[name] = [x, y, original[2], original[3]]
-        self.layout_targets[name].place_configure(relx=x, rely=y)
+        region_height = original[3]
+        if name == "listbox":
+            preferred_height = max(original[3], self.layout_defaults[name][3])
+            region_height = min(preferred_height, 1.0 - y)
+            widget.place_configure(relheight=region_height)
+        self.layout[name] = [x, y, original[2], region_height]
+        widget.place_configure(relx=x, rely=y)
         return "break"
 
     def open_color_palette(self):
@@ -592,8 +965,8 @@ class TimerNote:
         win.configure(bg=PAPER)
         win.resizable(True, True)
         win.transient(self.root)
-        win.geometry("700x250")
-        win.minsize(660, 230)
+        win.geometry("700x330")
+        win.minsize(660, 310)
         tk.Label(win, text="便签颜色" if self.language == "zh" else "Note colors", bg=PAPER, fg=INK,
                  font=(FONT, 11, "bold")).pack(anchor="w", padx=16, pady=(14, 8))
         self.palette_swatches = {}
@@ -613,6 +986,62 @@ class TimerNote:
                       command=lambda t=target: self.start_color_picker(t),
                       bg=TOP, fg=INK, relief="flat", padx=9).pack(side="left")
             self.palette_swatches[target] = swatch
+        opacity_row = tk.Frame(win, bg=PAPER)
+        self.opacity_row = opacity_row
+        if not self.glass_mode:
+            opacity_row.pack(fill="x", padx=16, pady=(9, 2))
+        self.opacity_title_label = tk.Label(
+            opacity_row,
+            text="透明度" if self.language == "zh" else "Opacity",
+            width=19, anchor="w", bg=PAPER, fg=INK, font=(FONT, 9))
+        self.opacity_title_label.pack(side="left")
+        self.opacity_scale = tk.Scale(
+            opacity_row, from_=60, to=100,
+            orient="horizontal", resolution=1,
+            showvalue=False, length=220, sliderlength=18, bd=0,
+            highlightthickness=0, bg=PAPER, troughcolor=LINE,
+            activebackground=ACCENT, command=self.set_opacity)
+        self.opacity_scale.set(round(self.opacity * 100))
+        self.opacity_scale.pack(side="left", padx=(0, 8))
+        self.opacity_label = tk.Label(opacity_row, text=f"{round(self.opacity * 100)}%",
+                                      width=5, anchor="e", bg=PAPER, fg=MUTED,
+                                      font=(FONT, 9))
+        self.opacity_label.pack(side="left")
+        self.glass_style_var = tk.StringVar(master=self.root, value=self.glass_style)
+        self.glass_style_row = tk.Frame(win, bg=PAPER)
+        self.glass_style_row.pack(fill="x", padx=16, pady=(9, 2))
+        tk.Label(self.glass_style_row,
+                 text="亚克力样式" if self.language == "zh" else "Backdrop style",
+                 width=19, anchor="w", bg=PAPER, fg=INK, font=(FONT, 9)).pack(side="left")
+        self.mica_radio = tk.Radiobutton(
+            self.glass_style_row, text="云母" if self.language == "zh" else "Mica",
+            value="mica", variable=self.glass_style_var, command=self.set_glass_style,
+            bg=PAPER, fg=INK, activebackground=PAPER, selectcolor=TOP,
+            font=(FONT, 9), bd=0, highlightthickness=0)
+        self.mica_radio.pack(side="left", padx=(0, 12))
+        self.high_transparency_radio = tk.Radiobutton(
+            self.glass_style_row,
+            text="高透" if self.language == "zh" else "High transparency",
+            value="high_transparency", variable=self.glass_style_var,
+            command=self.set_glass_style, bg=PAPER, fg=INK,
+            activebackground=PAPER, selectcolor=TOP,
+            font=(FONT, 9), bd=0, highlightthickness=0)
+        self.high_transparency_radio.pack(side="left")
+        if not self.glass_mode:
+            self.glass_style_row.pack_forget()
+        self.glass_var = tk.BooleanVar(master=self.root, value=self.glass_mode)
+        self.glass_checkbutton = tk.Checkbutton(
+            win,
+            text="启用 Windows 亚克力" if self.language == "zh" else "Enable Windows Acrylic",
+            variable=self.glass_var, command=self.set_glass_mode,
+            bg=PAPER, fg=INK, activebackground=PAPER, activeforeground=INK,
+            selectcolor=TOP, font=(FONT, 9), bd=0, highlightthickness=0
+        )
+        self.glass_checkbutton.pack(anchor="w", padx=16, pady=(6, 0))
+        tk.Label(win,
+                 text="启用后使用 Windows 半透明亚克力背景。" if self.language == "zh"
+                      else "Enable the translucent Windows Acrylic backdrop.",
+                 bg=PAPER, fg=MUTED, font=(FONT, 8)).pack(anchor="w", padx=16, pady=(2, 0))
         tk.Label(win, text="吸色时窗口会暂时隐藏；点击屏幕颜色取色，按 Esc 取消。" if self.language == "zh"
                  else "The app hides while sampling. Click a screen color; press Esc to cancel.",
                  bg=PAPER, fg=MUTED, font=(FONT, 8)).pack(anchor="w", padx=16, pady=(7, 0))
@@ -623,9 +1052,290 @@ class TimerNote:
         x = max(0, min(x, win.winfo_screenwidth() - win.winfo_width()))
         y = max(0, min(y, win.winfo_screenheight() - win.winfo_height()))
         win.geometry(f"+{x}+{y}")
+        self._apply_window_material(win)
+
+    def set_opacity(self, value):
+        try:
+            opacity_percent = max(60, min(100, int(float(value))))
+            self.opacity = opacity_percent / 100
+            self._apply_glass_effect()
+            if hasattr(self, "opacity_label") and self.opacity_label.winfo_exists():
+                self.opacity_label.configure(text=f"{opacity_percent}%")
+            self._schedule_settings_save()
+        except (tk.TclError, ValueError):
+            pass
+
+    def set_glass_mode(self):
+        self.glass_mode = bool(self.glass_var.get())
+        if not self.glass_mode:
+            self._close_acrylic_helper()
+        self.glass_style_var.set(self.glass_style)
+        self.apply_color(self.base_color, "paper")
+        self._apply_glass_effect()
+        self._sync_opacity_control()
+        self._sync_glass_style_control()
+        self.root.after_idle(self.apply_rounded_region)
+        for window in self.root.winfo_children():
+            if isinstance(window, tk.Toplevel) and window is not self.toast:
+                self._apply_window_material(window)
+        self._save_settings()
+
+    def _sync_opacity_control(self):
+        if not hasattr(self, "opacity_scale") or not self.opacity_scale.winfo_exists():
+            return
+        if self.glass_mode:
+            self.opacity_row.pack_forget()
+        else:
+            self.opacity_row.pack(fill="x", padx=16, pady=(9, 2))
+        self.opacity_scale.set(round(self.opacity * 100))
+        self.opacity_title_label.configure(
+            text="透明度" if self.language == "zh" else "Opacity")
+        self.opacity_label.configure(text=f"{round(self.opacity * 100)}%")
+
+    def _sync_glass_style_control(self):
+        if not hasattr(self, "glass_style_row") or not self.glass_style_row.winfo_exists():
+            return
+        if self.glass_mode:
+            self.glass_style_row.pack(fill="x", padx=16, pady=(9, 2),
+                                      before=self.glass_checkbutton)
+        else:
+            self.glass_style_row.pack_forget()
+        self.glass_style_var.set(self.glass_style)
+        self.mica_radio.configure(text="云母" if self.language == "zh" else "Mica")
+        self.high_transparency_radio.configure(
+            text="高透" if self.language == "zh" else "High transparency")
+
+    def set_glass_style(self):
+        self.glass_style = self.glass_style_var.get()
+        self._sync_acrylic_helper_parameters()
+        self._apply_glass_effect()
+        for window in self.root.winfo_children():
+            if isinstance(window, tk.Toplevel) and window is not self.toast:
+                self._apply_window_material(window)
+        self._save_settings()
+
+    def _acrylic_helper_executable(self):
+        candidates = (
+            os.path.join(APP_DIR, "native", "AcrylicBackdropHost", "rounded-glass", "AcrylicBackdropHost.exe"),
+            os.path.join(APP_DIR, "native", "AcrylicBackdropHost", "anchored", "AcrylicBackdropHost.exe"),
+            os.path.join(APP_DIR, "native", "AcrylicBackdropHost", "AcrylicBackdropHost.exe"),
+            os.path.join(APP_DIR, "native", "AcrylicBackdropHost", "bin", "Release",
+                         "net472", "win10-x64", "AcrylicBackdropHost.exe"),
+        )
+        return next((path for path in candidates if os.path.isfile(path)), None)
+
+    def _main_window_handle(self):
+        if os.name != "nt":
+            return 0
+        user32 = ctypes.windll.user32
+        user32.GetParent.restype = ctypes.c_void_p
+        user32.GetParent.argtypes = [ctypes.c_void_p]
+        child = self.root.winfo_id()
+        return int(user32.GetParent(ctypes.c_void_p(child)) or child)
+
+    def _sync_acrylic_helper_parameters(self):
+        if not self.glass_mode or os.name != "nt":
+            return False
+        parent = self.root.winfo_id()
+        if not parent:
+            return False
+        title = f"DailyPlanner-Acrylic-{parent:X}"
+        user32 = ctypes.windll.user32
+        user32.FindWindowW.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p]
+        user32.FindWindowW.restype = ctypes.c_void_p
+        helper_hwnd = user32.FindWindowW(None, title)
+        if not helper_hwnd:
+            if self.acrylic_helper_process is None or self.acrylic_helper_process.poll() is not None:
+                if self.acrylic_helper_pending:
+                    return False
+                executable = self._acrylic_helper_executable()
+                if not executable:
+                    return False
+                try:
+                    self.acrylic_helper_pending = True
+                    translucency = 99 if self.glass_style == "mica" else 100
+                    self.acrylic_helper_process = subprocess.Popen(
+                        [executable, f"{parent:X}", str(DEFAULT_ACRYLIC_BLUR),
+                         str(translucency)],
+                        cwd=os.path.dirname(executable),
+                        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
+                    self.root.after(160, self._retry_acrylic_helper_start)
+                except (OSError, tk.TclError):
+                    self.acrylic_helper_pending = False
+                    self.acrylic_helper_process = None
+            return False
+
+        self.acrylic_helper_hwnd = int(helper_hwnd)
+        self.acrylic_helper_pending = False
+        self._position_acrylic_helper()
+        user32.PostMessageW.argtypes = [ctypes.c_void_p, ctypes.c_uint,
+                                        ctypes.c_size_t, ctypes.c_ssize_t]
+        user32.PostMessageW.restype = ctypes.c_ssize_t
+        translucency = 99 if self.glass_style == "mica" else 100
+        user32.PostMessageW(helper_hwnd, ACRYLIC_HOST_MESSAGE,
+                            DEFAULT_ACRYLIC_BLUR, translucency)
+        return True
+
+    def _retry_acrylic_helper_start(self):
+        self.acrylic_helper_pending = False
+        if self.glass_mode and self.root.winfo_exists():
+            if self._sync_acrylic_helper_parameters():
+                self._apply_glass_effect()
+            elif self.acrylic_helper_process is not None and self.acrylic_helper_process.poll() is None:
+                self.acrylic_helper_pending = True
+                self.root.after(250, self._retry_acrylic_helper_start)
+
+    def _position_acrylic_helper(self):
+        if not self.acrylic_helper_hwnd or not self.glass_mode:
+            return
+        try:
+            user32 = ctypes.windll.user32
+            user32.SetWindowPos.argtypes = [ctypes.c_void_p, ctypes.c_void_p,
+                                            ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                                            ctypes.c_int, ctypes.c_uint]
+            user32.SetWindowPos.restype = ctypes.c_bool
+            user32.SetWindowPos(
+                ctypes.c_void_p(self.acrylic_helper_hwnd),
+                ctypes.c_void_p(self._main_window_handle()),
+                self.root.winfo_rootx() + 6, self.root.winfo_rooty() + 6,
+                max(1,self.root.winfo_width()-12), max(1,self.root.winfo_height()-12), 0x0010 | 0x0040 | 0x0200)
+        except (AttributeError, OSError, tk.TclError, ValueError):
+            pass
+
+    def _on_main_window_configure(self, event):
+        if event.widget is not self.root or not self.glass_mode:
+            return
+        if self.glass_text and self.glass_text.signature is not None:
+            self.glass_text.sync_position(self)
+        else:
+            self._position_acrylic_helper()
+
+    def _hide_acrylic_helper(self, hidden):
+        if self.acrylic_helper_hwnd and os.name == "nt":
+            try:
+                ctypes.windll.user32.ShowWindow(
+                    ctypes.c_void_p(self.acrylic_helper_hwnd), 0 if hidden else 4)
+                if not hidden:
+                    self._position_acrylic_helper()
+            except (AttributeError, OSError):
+                pass
+
+    def _update_glass_text(self):
+        self._text_after = None
+        if not self.glass_mode or not self.acrylic_helper_hwnd:
+            return
+        try:
+            if self.glass_text is None:
+                from glass_text import GlassText
+                self.glass_text = GlassText()
+            if self.glass_text.update(self) and float(self.root.attributes("-alpha")) > 0.02:
+                self.root.attributes("-alpha", 0.01)
+        except Exception as error:
+            if self.glass_text is not None:
+                self.glass_text.close()
+                self.glass_text = None
+            self.root.attributes("-alpha", 1.0)
+            with open(os.path.join(USER_DATA_DIR, "glass_text_error.log"), "w", encoding="utf-8") as log:
+                log.write(repr(error))
+            return
+        self._text_after = self.root.after(100, self._update_glass_text)
+
+    def _close_acrylic_helper(self):
+        if self._text_after is not None:
+            self.root.after_cancel(self._text_after)
+            self._text_after = None
+        if self.glass_text is not None:
+            self.glass_text.close()
+            self.glass_text = None
+        self.acrylic_helper_pending = False
+        if self.acrylic_helper_hwnd and os.name == "nt":
+            try:
+                ctypes.windll.user32.PostMessageW(
+                    ctypes.c_void_p(self.acrylic_helper_hwnd), 0x0010, 0, 0)
+            except (AttributeError, OSError):
+                pass
+        self.acrylic_helper_hwnd = 0
+        self.acrylic_helper_process = None
+
+    def _apply_glass_effect(self):
+        self._apply_window_material(self.root, main_window=True)
+
+    def _apply_window_material(self, window, main_window=False):
+        native_applied = False
+        try:
+            effective_opacity = (1.0 if self.glass_mode else (self.opacity if main_window else 1.0))
+            window.attributes("-alpha", effective_opacity)
+        except tk.TclError:
+            pass
+        if os.name == "nt":
+            try:
+                user32 = ctypes.windll.user32
+                user32.GetParent.restype = ctypes.c_void_p
+                user32.GetParent.argtypes = [ctypes.c_void_p]
+                hwnd = user32.GetParent(window.winfo_id()) or window.winfo_id()
+
+                # Keep every Tk pixel hittable, including empty button padding.
+                window.attributes("-transparentcolor", "")
+                helper_ready = (main_window and self.glass_mode
+                                and self._sync_acrylic_helper_parameters())
+                if self.glass_mode and helper_ready:
+                    class AccentPolicy(ctypes.Structure):
+                        _fields_ = [("state", ctypes.c_int), ("flags", ctypes.c_int),
+                                    ("gradient_color", ctypes.c_uint), ("animation_id", ctypes.c_int)]
+
+                    class AttributeData(ctypes.Structure):
+                        _fields_ = [("attribute", ctypes.c_int), ("data", ctypes.c_void_p),
+                                    ("size", ctypes.c_size_t)]
+
+                    policy = AccentPolicy(0, 0, 0, 0)
+                    data = AttributeData(19, ctypes.cast(ctypes.pointer(policy), ctypes.c_void_p),
+                                         ctypes.sizeof(policy))
+                    set_composition = user32.SetWindowCompositionAttribute
+                    set_composition.argtypes = [ctypes.c_void_p, ctypes.POINTER(AttributeData)]
+                    set_composition.restype = ctypes.c_bool
+                    set_composition(ctypes.c_void_p(hwnd), ctypes.byref(data))
+                    native_applied = True
+                elif self.glass_mode and main_window and not self._acrylic_helper_executable():
+                    class AccentPolicy(ctypes.Structure):
+                        _fields_ = [("state", ctypes.c_int), ("flags", ctypes.c_int),
+                                    ("gradient_color", ctypes.c_uint), ("animation_id", ctypes.c_int)]
+
+                    class AttributeData(ctypes.Structure):
+                        _fields_ = [("attribute", ctypes.c_int), ("data", ctypes.c_void_p),
+                                    ("size", ctypes.c_size_t)]
+
+                    # Preserve the original 99 and 100 presets on every window.
+                    mica_mode = self.glass_style == "mica"
+                    tint = (0x03 << 24) | 0x00E6E8EA if mica_mode else 0
+                    policy = AccentPolicy(4 if mica_mode else 3,
+                                          2 if mica_mode else 0, tint, 0)
+                    data = AttributeData(19, ctypes.cast(ctypes.pointer(policy), ctypes.c_void_p),
+                                         ctypes.sizeof(policy))
+                    set_composition = user32.SetWindowCompositionAttribute
+                    set_composition.argtypes = [ctypes.c_void_p, ctypes.POINTER(AttributeData)]
+                    set_composition.restype = ctypes.c_bool
+                    native_applied = bool(set_composition(ctypes.c_void_p(hwnd), ctypes.byref(data)))
+                if sys.getwindowsversion().build >= 22621 and not self.glass_mode:
+                    backdrop_type = ctypes.c_int(1)
+                    set_attribute = ctypes.windll.dwmapi.DwmSetWindowAttribute
+                    set_attribute.argtypes = [ctypes.c_void_p, ctypes.c_uint,
+                                              ctypes.c_void_p, ctypes.c_uint]
+                    set_attribute.restype = ctypes.c_long
+                    result = set_attribute(ctypes.c_void_p(hwnd), 38,
+                                           ctypes.byref(backdrop_type),
+                                           ctypes.sizeof(backdrop_type))
+                    native_applied = native_applied or (self.glass_mode and result == 0)
+            except (AttributeError, OSError, ValueError, tk.TclError):
+                native_applied = False
+        if main_window:
+            self.glass_native = native_applied
+            if self.glass_mode and self.acrylic_helper_hwnd and self._text_after is None:
+                self._update_glass_text()
 
     def choose_color(self, target):
-        current = PAPER if target == "paper" else (self.frame_color or TOP)
+        current = self.base_color if target == "paper" else (self.frame_color or self.base_color)
         selected = colorchooser.askcolor(color=current,
                                          title="选择颜色" if self.language == "zh" else "Choose a color",
                                          parent=self.palette_window)[1]
@@ -635,7 +1345,8 @@ class TimerNote:
     def refresh_palette_swatches(self):
         for target, swatch in getattr(self, "palette_swatches", {}).items():
             try:
-                swatch.configure(bg=PAPER if target == "paper" else (self.frame_color or TOP))
+                swatch.configure(bg=self.base_color if target == "paper"
+                                 else (self.frame_color or self.base_color))
             except tk.TclError:
                 pass
 
@@ -649,6 +1360,7 @@ class TimerNote:
         if self.palette_window and self.palette_window.winfo_exists():
             self.palette_window.withdraw()
         self.root.withdraw()
+        self._hide_acrylic_helper(True)
         self._poll_color_picker()
 
     def _poll_color_picker(self):
@@ -692,6 +1404,7 @@ class TimerNote:
         self.root.deiconify()
         self.root.lift()
         self.root.attributes("-topmost", self.pin.get())
+        self._hide_acrylic_helper(False)
         if color:
             self.apply_color(color, target)
         if self.palette_window and self.palette_window.winfo_exists():
@@ -705,6 +1418,27 @@ class TimerNote:
         self.root.bind_all("<B1-Motion>", self.resize_if_active, add="+")
         self.root.bind_all("<ButtonRelease-1>", self.end_resize, add="+")
         self.root.bind_all("<Motion>", self.update_resize_cursor, add="+")
+
+    def _apply_pin(self):
+        pinned = self.pin.get()
+        self.root.attributes("-topmost", pinned)
+        if self.glass_mode and self.glass_text is not None:
+            from glass_text import place
+            # Move all three windows into the same topmost band, back to front.
+            band = -1 if pinned else -2
+            for hwnd in (self.acrylic_helper_hwnd, self.glass_text.hwnd, self._main_window_handle()):
+                if hwnd:
+                    place(hwnd, band, 0, 0, 0, 0, 0x213)
+            self.glass_text.signature = None
+
+    def install_drag_targets(self):
+        for widget in (self.shell, *self.walk_widgets(self.shell)):
+            if not isinstance(widget, (tk.Frame, tk.Label)):
+                continue
+            if widget.bind("<ButtonPress-1>"):
+                continue
+            widget.bind("<ButtonPress-1>", self.start_drag, add="+")
+            widget.bind("<B1-Motion>", self.drag, add="+")
 
     def resize_edges_at(self, event):
         x = event.x_root - self.root.winfo_rootx()
@@ -790,6 +1524,8 @@ class TimerNote:
         if event and event.widget is not self.root:
             return
         self._schedule_settings_save()
+        if event and (event.width, event.height) == getattr(self, "_rounded_size", None):
+            return
         if self.resize_origin is not None:
             return
         if getattr(self, "_rounded_after", None):
@@ -819,6 +1555,8 @@ class TimerNote:
             top_hwnd = user32.GetParent(hwnd) or hwnd
             if region and not user32.SetWindowRgn(top_hwnd, region, True):
                 gdi32.DeleteObject(region)
+            elif region:
+                self._rounded_size = (width, height)
 
             dwm = ctypes.windll.dwmapi
             dwm.DwmSetWindowAttribute.restype = ctypes.c_long
@@ -826,10 +1564,11 @@ class TimerNote:
                                                   ctypes.c_void_p, ctypes.c_uint]
             preference = ctypes.c_int(2)
             dwm.DwmSetWindowAttribute(top_hwnd, 33, ctypes.byref(preference), ctypes.sizeof(preference))
+            frame_color = ACRYLIC_SURFACE if self.glass_mode else self.base_color
             border_color = ctypes.c_uint(
-                (int(self.base_color[5:7], 16) << 16)
-                | (int(self.base_color[3:5], 16) << 8)
-                | int(self.base_color[1:3], 16)
+                (int(frame_color[5:7], 16) << 16)
+                | (int(frame_color[3:5], 16) << 8)
+                | int(frame_color[1:3], 16)
             )
             dwm.DwmSetWindowAttribute(top_hwnd, 34, ctypes.byref(border_color), ctypes.sizeof(border_color))
         except (AttributeError, OSError):
@@ -923,6 +1662,7 @@ class TimerNote:
         self.root.state("normal")
         self.root.lift()
         self.root.attributes("-topmost", self.pin.get())
+        self._hide_acrylic_helper(False)
         self.root.focus_force()
         self.root.after_idle(self.apply_rounded_region)
 
@@ -931,6 +1671,7 @@ class TimerNote:
             self.install_tray_icon()
         if self._tray_icon_added:
             self.root.withdraw()
+            self._hide_acrylic_helper(True)
             self._save_settings()
         else:
             messagebox.showwarning("托盘不可用" if self.language == "zh" else "Tray unavailable",
@@ -939,6 +1680,7 @@ class TimerNote:
                                   parent=self.root)
 
     def quit_app(self):
+        self._close_acrylic_helper()
         if self._settings_after:
             try:
                 self.root.after_cancel(self._settings_after)
@@ -949,21 +1691,23 @@ class TimerNote:
                 self._tray_icon.stop()
             except Exception:
                 pass
+        self._account_stats(datetime.now(), self._current_bucket(datetime.now()))
+        self._save_stats()
         self._save_settings()
         self.root.destroy()
 
     def start_drag(self, event):
-        if self.resize_edges_at(event):
+        if self.layout_mode or self.resize_edges_at(event):
             return
         self.drag_offset_x = event.x_root - self.root.winfo_x()
         self.drag_offset_y = event.y_root - self.root.winfo_y()
 
     def drag(self, event):
-        if self.resize_origin is not None:
+        if self.layout_mode or self.resize_origin is not None:
             return
         x = event.x_root - self.drag_offset_x
         y = event.y_root - self.drag_offset_y
-        self.root.geometry(f"+{x}+{y}")
+        self.root.geometry(f"{x:+d}{y:+d}")
         self._schedule_settings_save()
 
     def draw_list(self):
@@ -989,18 +1733,21 @@ class TimerNote:
                 name = tk.Label(row, text=plan["task"], anchor="w", bg=PAPER, fg=INK,
                                 font=(FONT, 10), wraplength=360, padx=20)
                 name.pack(side="left", fill="x", expand=True, pady=12)
+                name.bind("<Configure>", lambda event: event.widget.configure(
+                    wraplength=max(1, event.width - 2 * event.widget.winfo_pixels(event.widget.cget("padx")) - 2)))
                 separator = tk.Frame(self.listbox, bg=LINE, height=1)
                 if index < len(self.plans) - 1:
                     separator.pack(fill="x", padx=(32, 4))
                 for widget in (row, marker, time_slot, time_label, name):
                     widget.bind("<Button-1>", lambda event, idx=index: self.handle_plan_click(idx, event))
                 self.list_rows.append((row, marker, time_slot, time_label, name, separator))
+            self._tag_layout_target("listbox", self.listbox)
             self.list_signature = signature
         now = datetime.now().strftime("%H:%M")
         for index, (plan, widgets) in enumerate(zip(self.plans, self.list_rows)):
             row, marker, time_slot, time_label, name, separator = widgets
             active = plan["start"] <= now < plan["end"]
-            background = ACTIVE if active else PAPER
+            background = ACRYLIC_DRAG_SURFACE if self.glass_mode else (ACTIVE if active else PAPER)
             for widget in (row, marker, time_slot, time_label, name):
                 widget.configure(bg=background)
             selected = index in self.selected_plans
@@ -1107,9 +1854,19 @@ class TimerNote:
 
         content = tk.Frame(body, bg=PAPER)
         content.pack(side="left", fill="both", expand=True)
-        tk.Label(content, text="工作内容" if self.language == "zh" else "Work",
-                 bg=PAPER, fg=INK,
-                 font=(FONT, 11, "bold")).pack(anchor="w", pady=(0, 6))
+        task_header = tk.Frame(content, bg=PAPER)
+        task_header.pack(fill="x", pady=(0, 6))
+        tk.Label(task_header, text="工作内容" if self.language == "zh" else "Description",
+                 bg=PAPER, fg=INK, font=(FONT, 11, "bold")).pack(side="left")
+        kind_var = tk.StringVar(value="rest" if old.get("kind") == "rest" else "work")
+        tk.Radiobutton(task_header, text="休息段" if self.language == "zh" else "Rest block",
+                       variable=kind_var, value="rest", bg=PAPER, fg=MUTED,
+                       activebackground=PAPER, selectcolor=PAPER,
+                       font=(FONT, 8)).pack(side="right")
+        tk.Radiobutton(task_header, text="工作段" if self.language == "zh" else "Work block",
+                       variable=kind_var, value="work", bg=PAPER, fg=MUTED,
+                       activebackground=PAPER, selectcolor=PAPER,
+                       font=(FONT, 8)).pack(side="right", padx=(0, 5))
         def rounded_text(parent, height, font):
             box = tk.Canvas(parent, bg=PAPER, height=height, highlightthickness=0)
             shape = box.create_polygon(12, 1, 120, 1, 139, 8, 139, 60, 132, 74, 12, 74, 1, 64, 1, 12,
@@ -1166,7 +1923,8 @@ class TimerNote:
                 else:
                     eh.focus_set()
                 return
-            item = {"start": start, "end": end, "task": task_value, "next": next_value}
+            item = {"start": start, "end": end, "task": task_value, "next": next_value,
+                    "kind": kind_var.get()}
             if index is None:
                 self.plans.append(item)
             else:
@@ -1183,6 +1941,7 @@ class TimerNote:
         x = self.root.winfo_rootx() + (self.root.winfo_width() - win.winfo_width()) // 2
         y = self.root.winfo_rooty() + (self.root.winfo_height() - win.winfo_height()) // 2
         win.geometry(f"+{x}+{y}")
+        self._apply_window_material(win)
         win.lift()
         win.focus_force()
     def ring(self, fraction):
@@ -1241,6 +2000,14 @@ class TimerNote:
         if self.rendered_minute != minute:
             self.draw_list()
         active = next((p for p in self.plans if p["start"] <= minute < p["end"]), None)
+        if not active or active.get("kind") == "rest":
+            self.fishing = False
+        self._account_stats(now, self._current_bucket(now))
+        if minute >= self.report_time and self.report_notified_date != now.date().isoformat():
+            self.report_notified_date = now.date().isoformat()
+            self._save_stats()
+            self._save_settings()
+            self.notify_daily_report()
         if active:
             end = datetime.combine(now.date(), parse_time(active["end"]))
             seconds = max(0, int((end - now).total_seconds()))
@@ -1248,9 +2015,14 @@ class TimerNote:
             duration = max(1, int((parse_time(active["end"]).hour * 60 + parse_time(active["end"]).minute -
                                    parse_time(active["start"]).hour * 60 - parse_time(active["start"]).minute) * 60))
             fraction = seconds / duration
-            self.state.config(text="● 正在进行" if self.language == "zh" else "● In progress", fg=ACCENT)
+            if active.get("kind") == "rest":
+                self.state.config(text="● 休息中" if self.language == "zh" else "● Resting", fg=MUTED)
+            else:
+                self.state.config(text=("● 摸鱼中" if self.fishing else "● 正在进行") if self.language == "zh"
+                                  else ("● Goofing off" if self.fishing else "● In progress"), fg=ACCENT)
             self.task.config(text=active["task"])
             self.period.config(text=f'{active["start"]} – {active["end"]}')
+            self._update_fishing_button(active)
         else:
             upcoming = next((p for p in self.plans if p["start"] > minute), None)
             if upcoming:
@@ -1264,6 +2036,7 @@ class TimerNote:
                 self.period.config(text="辛苦了，今天做得很好" if self.language == "zh" else "Nice work today")
             self.remaining = "--:--"
             fraction = 0
+            self._update_fishing_button(None)
         self.ring(fraction)
         self.root.after(1000, self.refresh)
 
@@ -1357,6 +2130,77 @@ class TimerNote:
         except (AttributeError, OSError):
             pass
         toast.after(14000, lambda: toast.destroy() if toast.winfo_exists() else None)
+
+    def notify_daily_report(self):
+        self.sound()
+        if self.toast and self.toast.winfo_exists():
+            self.toast.destroy()
+        toast = tk.Toplevel(self.root)
+        self.toast = toast
+        toast.withdraw()
+        toast.overrideredirect(True)
+        toast.attributes("-topmost", True)
+        toast.configure(bg="#D9DADD")
+        width = 440
+        card = tk.Frame(toast, bg="#FFFFFF", highlightthickness=1,
+                        highlightbackground="#E2E3E6")
+        card.pack(fill="both", expand=True, padx=1, pady=1)
+        header = tk.Frame(card, bg="#F3F3F5", height=46)
+        header.pack(fill="x")
+        header.pack_propagate(False)
+        tk.Label(header, text="◷", bg="#F3F3F5", fg="#A66B1C",
+                 font=("Segoe UI", 15)).pack(side="left", padx=(16, 9))
+        tk.Label(header, text="今日计划" if self.language == "zh" else "DailyPlanner",
+                 bg="#F3F3F5", fg="#36363A", font=("Segoe UI", 10, "bold")).pack(side="left")
+        tk.Button(header, text="×", command=toast.destroy, bg="#F3F3F5", fg="#73747A",
+                  activebackground="#E8E8EA", relief="flat", bd=0,
+                  font=("Segoe UI", 16)).pack(side="right", padx=(2, 12))
+        content = tk.Frame(card, bg="#FFFFFF", padx=20, pady=15)
+        content.pack(fill="both", expand=True)
+        tk.Label(content, text="今天的日报生成了" if self.language == "zh"
+                 else "Today's report is ready", bg="#FFFFFF", fg="#986019",
+                 font=(FONT, 11, "bold")).pack(anchor="w", pady=(0, 5))
+        tk.Label(content, text="想看看今天的工作、摸鱼和休息时间吗？" if self.language == "zh"
+                 else "See how your work, breaks, and rest time added up?",
+                 bg="#FFFFFF", fg="#55565A", font=(FONT, 10),
+                 wraplength=width - 44, justify="left").pack(anchor="w")
+        actions = tk.Frame(content, bg="#FFFFFF")
+        actions.pack(fill="x", pady=(14, 0))
+        def view_report():
+            if toast.winfo_exists():
+                toast.destroy()
+            self.show_daily_report()
+        tk.Button(actions, text="不想看" if self.language == "zh" else "Dismiss",
+                  command=toast.destroy, bg="#F3F3F5", fg="#45464B",
+                  activebackground="#E8E8EA", relief="flat", bd=0,
+                  padx=14, pady=6, font=(FONT, 9)).pack(side="right", padx=(8, 0))
+        tk.Button(actions, text="查看" if self.language == "zh" else "View",
+                  command=view_report, bg="#F3F3F5", fg="#45464B",
+                  activebackground="#E8E8EA", relief="flat", bd=0,
+                  padx=16, pady=6, font=(FONT, 9)).pack(side="right")
+        toast.geometry(f"{width}x180+0+0")
+        toast.update_idletasks()
+        left, top, right, bottom = 0, 0, toast.winfo_screenwidth(), toast.winfo_screenheight()
+        try:
+            work_area = ctypes.wintypes.RECT()
+            if ctypes.windll.user32.SystemParametersInfoW(0x0030, 0, ctypes.byref(work_area), 0):
+                left, top, right, bottom = work_area.left, work_area.top, work_area.right, work_area.bottom
+        except (AttributeError, OSError):
+            pass
+        height = max(180, card.winfo_reqheight() + 8)
+        toast.geometry(f"{width}x{height}+{max(left + 12, right - width - 16)}+{max(top + 12, bottom - height - 16)}")
+        toast.deiconify()
+        try:
+            hwnd = toast.winfo_id()
+            user32 = ctypes.windll.user32
+            user32.GetParent.restype = ctypes.c_void_p
+            user32.GetParent.argtypes = [ctypes.c_void_p]
+            hwnd = user32.GetParent(hwnd) or hwnd
+            preference = ctypes.c_int(2)
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 33, ctypes.byref(preference), ctypes.sizeof(preference))
+        except (AttributeError, OSError):
+            pass
+        toast.after(20000, lambda: toast.destroy() if toast.winfo_exists() else None)
 
     def _play_sound_asset(self, filename):
         if os.name != "nt":
