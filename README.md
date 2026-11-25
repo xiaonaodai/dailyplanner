@@ -1,135 +1,94 @@
 # DailyPlanner
 
-Your plan for the day, right on your desktop.
+> **Reclaim your focus. A minimalist, frosted-glass desktop companion built for personal study, time-blocking, and distraction-free deep work.**
+> 
+> **把时间还给自己。专为个人自习与深度专注打造的 Windows 桌面时间块毛玻璃便签。**
 
-DailyPlanner is a small Windows app that keeps your schedule in a floating sticky note. Add a few time blocks, write down what you want to do, and leave it beside your work. It shows your current task, counts down the time left, and reminds you when a block ends.
-
-[Download the app](https://github.com/xiaonaodai/dailyplanner/releases) · [中文版](#今日计划)
-
-## A little window that feels at home
-
-Keep the familiar colored sticky note, or turn on frosted glass and let your wallpaper show through.
-
-**Mica** gives the window a soft, misty look. **High transparency** brings through more of the colors behind it. Both have rounded corners, with crisp text over the blurred background.
-
-![DailyPlanner desktop planner](screenshots/planner.png)
-
-![Mica on the left and high transparency on the right](screenshots/glass-comparison-en.png)
-
-![Goof off button beside the current task](screenshots/goof-off-en.png)
-
-## What you can do
-
-- **Plan your day in time blocks.** Add a task, set its start and end time, and choose a reminder.
-- **Know what to focus on.** The current task and its countdown stay in view. When the day's plan is over, a checkmark lets you know you're done.
-- **Make it yours.** Pick your note and frame colors, or grab a color from anywhere on your screen.
-- **Put it where you like.** Drag the window around, resize it, and use the pin checkbox to keep it above other windows.
-- **Tuck it away.** Closing the panel sends it to the system tray. Click the tray icon to bring it back.
-- **Choose your language.** English and Simplified Chinese are available.
-
-## Get started
-
-1. Head to [Releases](https://github.com/xiaonaodai/dailyplanner/releases) and download **DailyPlanner-Setup.exe**.
-2. Open the installer, choose your language and installation folder, and finish the setup.
-3. Open DailyPlanner from your desktop or Start menu and add your first time block.
-
-You can use the installed app without installing Python. To quit completely, right-click its icon in the system tray and choose Quit. Before installing an update, quit the old instance there first.
-
-The planner supports 64-bit Windows 10 and later. For the rounded frosted-glass look shown above, use Windows 11 and turn on Windows transparency effects.
-
-## What's new in 1.1.0
-
-This release adds the rounded Mica and High transparency looks. It also improves clicking and dragging in glass mode and fixes the completion and pin checkmarks.
-
-We took a few detours to get this glass working, including yellow backgrounds, pale text fringes, tiny click targets and rounded corners that turned the panel white. The [bilingual implementation notes](ACRYLIC.md) explain how we worked through them.
-
-There is also a **Goof off** button. Click it when you want a little time away from work... The three-dot menu at the top right opens your daily report, where you can see how much time you spent working, goofing off and resting. You can also choose when the daily report reminder appears.
-
-For developers looking into **Python Tkinter acrylic, Windows desktop blur and transparent windows**, the implementation notes cover the C# backdrop host, alpha-composited text, mouse hit testing and rounded corners, with links to the relevant source files.
-
-## Build it yourself
-
-You'll need 64-bit Windows, Python 3.12 or later, a .NET SDK with .NET Framework 4.7.2 targeting support, and Inno Setup 6. The first build needs an internet connection to download dependencies.
-
-Open PowerShell in the project folder and run the following commands. Adjust the last path if you installed Inno Setup somewhere else.
-
-```powershell
-python -m pip install pyinstaller pystray pillow
-.\package_app.ps1
-& "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe" .\DailyPlanner.iss
-```
-
-The installer will be at `release\DailyPlanner-Setup.exe`. You can also run `release\DailyPlanner\DailyPlanner.exe` directly, keeping the whole DailyPlanner folder together.
-
-To run from source, install `pystray` and `pillow`, build the glass helper following [ACRYLIC.md](ACRYLIC.md), and open `timer_note.pyw`.
-
-## Your data
-
-Your schedule, settings and statistics stay on your computer in `%APPDATA%\DailyPlanner`. Uninstalling the app keeps this folder so your plans are still there if you reinstall.
-
-The JSON files included in the repository are starter defaults. If you contribute changes, check that your personal schedule and settings aren't included.
-
-## License
-
-DailyPlanner is available under the [MIT License](LICENSE).
+[Download the app (Releases)](https://github.com/xiaonaodai/dailyplanner/releases) · [Screenshots](#a-tranquil-glass-note-on-your-desktop) · [中文说明](#今日计划-dailyplanner)
 
 ---
 
-# 今日计划
+## Why DailyPlanner?
 
-把今天要做的事，放在桌面上。
+Most productivity apps miss the reality of personal study and focused work:
 
-今日计划是一款 Windows 桌面小工具，像一张贴在桌面上的便签。填好几个时间段，写下要做的事，把它放在工作窗口旁边，就能随时看到现在该做什么、还剩多少时间。一个时间段结束时，它会提醒你。
+- **Todo lists hoard guilt, not action.** Listing twenty items doesn't tell you *when* to do them. Tasks pile up until looking at the checklist brings anxiety rather than momentum.
+- **Phone timers invite distractions.** You glance at your phone to check how much time is left on a Pomodoro cycle, see a badge, and lose twenty minutes to social media feeds.
+- **It is easy to lose your sense of time.** Working on a laptop or PC often means losing yourself in dozens of browser tabs and windows, with hours slipping by unnoticed.
 
-[下载安装](https://github.com/xiaonaodai/dailyplanner/releases) · [English](#dailyplanner)
+**DailyPlanner is built as a personal anchor for your study desk.** It is designed for students, exam preparation (such as grad school and certifications), solo makers, and personal projects.
 
-![今日计划桌面界面](screenshots/planner-zh.png)
+You divide your day into a few realistic **time blocks** (e.g. `09:00 – 10:30 Practice Calculus`). DailyPlanner sits beside your open books or study windows as an ambient frosted-glass sticky note. Glance over, and you immediately know what you should be doing right now and how many minutes remain.
 
-![左侧云母与右侧高透对比](screenshots/glass-comparison-zh.png)
+---
 
-![当前任务旁的摸鱼按钮](screenshots/goof-off-zh.png)
+## A tranquil glass note on your desktop
 
-## 给桌面添一块毛玻璃
+DailyPlanner blends into your personal wallpaper with native Windows 11 rounded frosted glass, keeping your text pin-sharp over a soft blurred backdrop.
 
-你可以用熟悉的彩色便签，也可以打开亚克力，让壁纸的颜色透进来。
+![DailyPlanner desktop interface](screenshots/planner.png)
 
-喜欢柔和一点的感觉，就选**云母**，像隔着一层薄雾。喜欢更通透的感觉，就选**高透**，窗后的颜色会更明显。两种都有圆角，背景模糊，文字清楚。
+### Presets tailored for your setup
 
-效果可以看上面的截图，左右对比图里左侧是云母，右侧是高透。
+- **Mica (云母)**: A gentle, misty look that feels grounded and easy on the eyes during long evening study sessions.
+- **High transparency (高透)**: A crystal-clear frosted glass that lets the vivid colors of your favorite anime or scenery wallpaper shine through.
+- **Classic Paper**: Love the traditional sticky note look? Switch back anytime and pick custom note or frame colors using the built-in eyedropper.
 
-## 它能帮你做什么
+![Mica on the left and high transparency on the right](screenshots/glass-comparison-en.png)
 
-- **把一天安排成几个时间段。** 写任务、设开始和结束时间，再加一句结束提醒。
-- **随时看见眼前的事。** 当前任务和倒计时会显示在面板上。当天的计划结束后，会出现一个完成的对勾。
-- **调成自己喜欢的颜色。** 纸面和边框都能改色，还能直接从屏幕上吸取喜欢的颜色。
-- **放在顺手的位置。** 窗口可以拖动、调整大小，勾上“悬浮”就能一直显示在其他窗口上面。
-- **暂时收起来。** 点关闭后，它会藏到右下角托盘。需要时点一下托盘图标，就回来了。
-- **切换中英文。** 可以按自己的习惯选择界面语言。
+---
 
-## 下载后怎么用
+## Features designed for real life
 
-1. 打开 [Releases 下载页](https://github.com/xiaonaodai/dailyplanner/releases)，下载 **DailyPlanner-Setup.exe**。
-2. 双击安装包，选好语言和安装位置，跟着提示安装。
-3. 从桌面快捷方式或开始菜单打开，添加第一个时间段。
+### 1. Time-blocking that actually works
+Instead of overwhelming checklists, plan your hours in structured blocks. Each block has a start time, an end time, and an optional transition prompt to help you switch smoothly into the next task.
 
-安装版下载后就能用，无需安装 Python。如果想彻底退出，右键点击右下角托盘里的图标，再选择退出。更新版本前，也先从这里退出旧程序。
+### 2. An ambient countdown ring
+A circular progress ring quietly glides along with the clock, providing a calm visual sense of time passing without intrusive ticking.
 
-普通计划功能支持 64 位 Windows 10 及以上系统。想用上图里的圆角毛玻璃效果，请使用 Windows 11，并在系统设置中打开“透明效果”。
+### 3. "Goof off" button — guilt-free breaks
+Real study involves mental fatigue. Forcing unbroken discipline leads to burnout. Whenever you need to step away, daydream, or scroll a video, click the **Goof off** button right next to the active task. DailyPlanner pauses without judging you.
 
-## 1.1.0 更新了什么
+![Goof off button beside the active task](screenshots/goof-off-en.png)
 
-这次加入了圆角云母和高透两种外观，也修好了毛玻璃模式下的点击、拖动，以及完成状态和悬浮按钮的对勾。
+### 4. Daily reflection report
+At the end of your day (customizable, default 21:00), a gentle notification invites you to review your stats: how many hours you spent studying, taking breaks, and goofing off. Seeing your real time recorded helps you close your laptop with peace of mind.
 
-为了做出这块毛玻璃，我们确实走了不少弯路。黄底、文字白边、只能点到字、圆角一开就变白，都碰到过。感兴趣的话，可以看看[中英双语技术记录](ACRYLIC.md)，里面写了这些问题是怎么一步步解决的。
+### 5. Private, lightweight, and local-first
+- **Always on top**: Pin the note to stay above your reference materials or study browser.
+- **System tray friendly**: Close the window to tuck it away into the system tray; click anytime to restore it.
+- **Zero cloud tracking**: 100% of your schedule and stats stay strictly on your local PC in `%APPDATA%\DailyPlanner`.
 
-还新增了摸鱼功能，点击摸鱼就可以去放心摸鱼了...你在右上角三个点里能看到自己的统计日报，还可以设置每日推送统计日报的时间，在那里你能看到每天摸了多少鱼，认真干活多久，休息多久。
+---
 
-如果你在研究 **Python Tkinter 亚克力、Windows 桌面背景模糊或透明窗口**，技术记录里还写了 C# 背景程序、文字透明合成、鼠标点击区域和圆角的实现，并附有对应源码入口。
-## 想自己打包
+## Get started
 
-需要准备 64 位 Windows、Python 3.12 或更高版本、.NET SDK、.NET Framework 4.7.2 目标支持，以及 Inno Setup 6。第一次构建时需要联网下载依赖。
+1. Go to [Releases](https://github.com/xiaonaodai/dailyplanner/releases) and download **DailyPlanner-Setup.exe**.
+2. Run the installer, select your preferred language (English or Simplified Chinese) and target folder.
+3. Open DailyPlanner from your desktop shortcut or Start menu, add your first time block, and start your day!
 
-在项目文件夹里打开 PowerShell，依次运行下面的命令。如果 Inno Setup 装在其他位置，把最后一行的路径换成自己的安装位置。
+*No Python installation required for the setup package. Supports 64-bit Windows 10 and 11 (Windows 11 with transparency effects enabled is recommended for rounded frosted glass).*
+
+---
+
+## What's new in v1.1.0
+
+- **Rounded Mica & High-transparency glass**: True multi-layer frosted glass combining native C# DWM backdrop hosting, premultiplied alpha text composition, and full mouse hit-testing.
+- **Goof-off mode & Daily Report**: Track active work, rest, and leisure time with custom evening report push notifications.
+- **Refined interaction**: Fixed edge clicking, smooth dragging across monitors, and improved checkmark indicators.
+
+For developers interested in **Python Tkinter acrylic windows, custom WinForms backdrop hosts, and DWM composition**, see our detailed [implementation notes (ACRYLIC.md)](ACRYLIC.md).
+
+---
+
+## Build from source (For Developers)
+
+> [!NOTE]
+> **For everyday users:** You do **not** need to install Python or build anything! Simply grab `DailyPlanner-Setup.exe` from [Releases](https://github.com/xiaonaodai/dailyplanner/releases) to use the app directly.
+> 
+> This section is for developers and makers who want to modify the source code, tweak features, or compile the project themselves.
+
+Requirements: Windows 64-bit, Python 3.12+, .NET SDK (.NET Framework 4.7.2 targeting support), and Inno Setup 6.
 
 ```powershell
 python -m pip install pyinstaller pystray pillow
@@ -137,16 +96,116 @@ python -m pip install pyinstaller pystray pillow
 & "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe" .\DailyPlanner.iss
 ```
 
-生成的安装包在 `release\DailyPlanner-Setup.exe`。也可以直接运行 `release\DailyPlanner\DailyPlanner.exe`，使用时请保留整个 DailyPlanner 文件夹。
+The installer will be generated at `release\DailyPlanner-Setup.exe`.
 
-想直接运行源码，先安装 `pystray` 和 `pillow`，按[技术记录](ACRYLIC.md)构建毛玻璃背景程序，再打开 `timer_note.pyw`。
+---
 
-## 我的计划存在哪里
+## License
 
-日程、设置和统计都保存在你自己的电脑上，位置是 `%APPDATA%\DailyPlanner`。卸载时会保留这个文件夹，以后重新安装还可以接着用。
+Released under the [MIT License](LICENSE).
 
-仓库里的 JSON 文件是初始示例。如果你要提交代码，记得检查一下，避免把自己的日程和设置一起传上去。
+---
 
-## 许可证
+# 今日计划 (DailyPlanner)
 
-本项目使用 [MIT 许可证](LICENSE)。
+> **把时间还给自己。专为个人自习、备考与深度专注打造的 Windows 桌面时间块毛玻璃便签。**
+
+[下载安装包 (Releases)](https://github.com/xiaonaodai/dailyplanner/releases) · [界面截图](#给桌面添一块静心的毛玻璃) · [English](#dailyplanner)
+
+---
+
+## 为什么做这款小工具？
+
+市面上绝大多数待办工具，往往让人越用越累：
+
+- **待办清单只囤积焦虑，解决不了拖延。** 任务列了一长串，打勾虽然爽，却从不告诉你“什么时候做”。最后清单越积越厚，甚至让人不敢打开。
+- **手机番茄钟是隐形的注意力杀手。** 拿起手机只是想看一眼倒计时，锁屏通知一亮，顺手就刷了半小时社交媒体或视频。
+- **面对电脑自习或做事，容易丧失时间感知。** 查资料时浏览器标签页开了一堆，窗口切来切去，一眨眼一个下午就没了，却想不起自己到底干了什么。
+
+**《今日计划》是专为你自己的自习桌面打造的“时间锚点”。** 它不是用来应付团队汇报或打卡的，而是属于你个人备考（考研、考公、期末）、自习刷题、个人创作时的专注伴侣。
+
+你只需要把今天划分成几个**实在的时间块**（比如 `09:00 – 10:30 搞懂高等数学第四章`）。它像一张半透明的毛玻璃便签，安静地悬浮在屏幕一角。抬头瞥一眼，就能看清**现在该干嘛、还剩多少分钟**。
+
+---
+
+## 给桌面添一块静心的毛玻璃
+
+它支持 Windows 11 原生圆角毛玻璃效果，文字清晰锐利，透出你精心挑选的电脑壁纸。
+
+![今日计划桌面界面](screenshots/planner-zh.png)
+
+### 两种精心打磨的通透质感
+
+- **云母（Mica）**：像晨雾一般柔和内敛，长时间自习或晚上码字不刺眼、不喧宾夺主。
+- **高透（High Transparency）**：通透晶莹，把好看的二次元壁纸或风景大图衬得层次分明。
+- **经典纸张**：也保留了最纯粹的黄色便签风格。配合自带的屏幕吸色笔，可以抓取屏幕上任意颜色做专属主题。
+
+![左侧云母与右侧高透对比](screenshots/glass-comparison-zh.png)
+
+---
+
+## 贴合真实生活的功能细节
+
+### 1. 时间块规划（Time-blocking）
+拒绝无限堆积清单。填好开始时间、结束时间和任务内容，到期自动提醒，并提示下一项准备做什么，平滑过渡不迷茫。
+
+### 2. 呼吸感环形倒计时
+中央圆环伴随当前时间静静推进，带来一种温和的紧迫感与节奏感，不再需要神经紧绷地看秒表跳动。
+
+### 3. “摸鱼”按钮 —— 允许自己喘口气
+真正的专注不是当苦行僧。学累了、脑子卡住了想刷会视频放空？点击当前任务旁的**【摸鱼】**按钮，计时器自动切入摸鱼状态，不唠叨、不惩罚，接纳自己的真实状态。
+
+![当前任务旁的摸鱼按钮](screenshots/goof-off-zh.png)
+
+### 4. 晚间日报反馈
+每天晚上（默认 21:00，可自定义），右下角会弹出一张专属日报卡片：今天认真专注了多久、休息了多久、摸了多久鱼。看得见的付出，让你睡前心里有底气、踏实不慌张。
+
+### 5. 纯本地、轻量私密
+- **置顶悬浮**：勾选“悬浮”就能常驻在参考资料或题库窗口上方，随意拖拽移动、拉伸窗口大小。
+- **托盘小憩**：点关闭后静默最小化到右下角通知区域，不占任务栏，点击托盘图标一键唤回。
+- **100% 本地存储**：所有计划和统计数据都在本机 `%APPDATA%\DailyPlanner`，无需注册，绝无云端上传，你的作息完全私密。
+
+---
+
+## 下载与使用
+
+1. 打开 [Releases 下载页](https://github.com/xiaonaodai/dailyplanner/releases)，下载 **DailyPlanner-Setup.exe**。
+2. 双击安装包，根据提示选择语言与安装路径。
+3. 从桌面图标启动，写下你的第一个专注时间块！
+
+*安装包开箱即用，无需配置 Python 环境。支持 64 位 Windows 10 与 11（推荐 Windows 11 并开启系统“透明效果”体验圆角毛玻璃）。*
+
+---
+
+## 1.1.0 更新日志
+
+- **圆角云母与高透双模式**：采用 C# 原生背景宿主 + Python 像素级透明合成 + 独立鼠标点击穿透分层架构，解决了白边、只能点到字、圆角泛白等一系列难题。
+- **摸鱼模式与每日统计推送**：支持随时随地“摸鱼打卡”，晚上按时推送日报卡片。
+- **底层交互升级**：修复了多显示器拖拽对齐、任务项边缘手势点击及各类中英文界面细节。
+
+对 **Python Tkinter 亚克力毛玻璃、透明窗口合成与 Windows DWM 机制** 感兴趣的朋友，欢迎阅读我们总结的[中英双语踩坑与技术实现文档 (ACRYLIC.md)](ACRYLIC.md)。
+
+---
+
+## 本地编译与二次开发（开发者选项）
+
+> [!NOTE]
+> **日常使用请直接跳过这一节**：如果你只是想使用这款软件，直接在 [Releases 下载页](https://github.com/xiaonaodai/dailyplanner/releases) 下载 `DailyPlanner-Setup.exe` 即可开箱即用，电脑上**完全不需要**安装 Python 或任何开发工具！
+> 
+> 本节内容是专门写给想要**查看源码、修改功能或自己动手编译打包**的朋友看的。
+
+编译环境要求：64 位 Windows、Python 3.12+、.NET SDK (.NET Framework 4.7.2 目标包支持) 与 Inno Setup 6。
+
+```powershell
+python -m pip install pyinstaller pystray pillow
+.\package_app.ps1
+& "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe" .\DailyPlanner.iss
+```
+
+生成的安装程序保存在 `release\DailyPlanner-Setup.exe`。
+
+---
+
+## 开源协议
+
+本项目采用 [MIT 许可证](LICENSE)。

@@ -1,6 +1,12 @@
 # DailyPlanner | Windows acrylic implementation
 
-[中文版](#今日计划的-windows-亚克力实现) · Source snapshot, 2026-11-25
+[中文版](#今日计划的-windows-亚克力实现) · Engineering Post-Mortem & Architecture Guide
+
+> [!NOTE]
+> **Why this document exists:**
+> Implementing native Windows 11 rounded frosted glass (Acrylic / Mica) in Python Tkinter is notoriously painful. Most online demos break immediately when transitioning from a toy prototype into a real application: transparent color keys leak mouse clicks right into the desktop, transparent text loses its subpixel anti-aliasing and turns into fuzzy white silhouettes, and adding rounded corners causes DWM to paint the entire client area solid white.
+> 
+> Rather than hiding the struggle, this document serves as an honest engineering log of how DailyPlanner evolved from an opaque yellow sticky note into an interactive, multi-layered frosted glass window—and why the final **"Three-Layer Sandwich Architecture"** solved all the fundamental limitations of Tkinter on modern Windows.
 
 ## How we got here
 
@@ -18,7 +24,25 @@ An early build also failed at startup because `TimerNote.build` bound `<Configur
 
 ## Window ownership and coordinates
 
-The main panel consists of three top-level Windows windows. Each has its own handle (`HWND`). Tk owns the layout. A widget’s bounding rectangle determines both its clickable area and where to draw its visible contents. The palette, reports and settings are separate dialogs.
+The main panel consists of three top-level Windows windows arranged in a synchronized "sandwich" architecture. Each has its own OS window handle (`HWND`):
+
+```text
+┌─────────────────────────────────────────────────────────────────┐
+│ 1. Input Layer (Top)       - Tkinter Window (Opacity: 0.01)     │
+│    • Captures mouse clicks, button hits & window drags          │
+│    • Visually transparent, but full control padding stays solid │
+├─────────────────────────────────────────────────────────────────┤
+│ 2. Visual Layer (Middle)   - Python GlassText (WS_EX_LAYERED)   │
+│    • Premultiplied RGBA bitmap via UpdateLayeredWindow          │
+│    • Draws pin-sharp text, countdown ring & vector checkmarks   │
+│    • Click-through (WS_EX_TRANSPARENT), purely visual           │
+├─────────────────────────────────────────────────────────────────┤
+│ 3. Backdrop Layer (Bottom) - C# WinForms Host (DWM API)         │
+│    • Native Windows 11 rounded corners (DWMWCP_ROUND)           │
+│    • Hardware-accelerated Acrylic (State 3) & Mica (State 4)    │
+│    • Synchronously tracks parent coordinates & z-order          │
+└─────────────────────────────────────────────────────────────────┘
+```
 
 | Stacking order | Owner | Responsibility |
 | --- | --- | --- |
@@ -70,6 +94,14 @@ For missing text, check `%APPDATA%\DailyPlanner\glass_text_error.log`. For a hos
 
 # 今日计划的 Windows 亚克力实现
 
+> [!NOTE]
+> **写在前面：**
+> 在 Python Tkinter 里面做 Windows 11 原生圆角毛玻璃（亚克力 / 云母），是一部充满挫折的“踩坑血泪史”。
+> 
+> 网上的教程大多只停留在几行代码的 Demo 阶段，一旦进入真实桌面软件开发，各种致命问题就会接踵而至：用透明色键抠图导致鼠标直接穿透点到桌面上、文字半透明导致边缘泛起刺眼的白色杂色毛边、好不容易加上圆角窗口又直接变成死白色……
+> 
+> 本文档不讲空洞的理论，而是毫无保留地公开我们在开发《今日计划》过程中的真实调试记录，以及最终如何用**独创的“三层三明治架构”**彻底攻克 Tkinter 底层限制的完整工业级方案。希望能帮到每一个在 Windows 桌面美化和 Python GUI 领域探索的开发者。
+
 源码记录，2026-11-25。
 
 ## 我们是怎样一路试过来的
@@ -77,7 +109,7 @@ For missing text, check `%APPDATA%\DailyPlanner\glass_text_error.log`. For a hos
 最初的参照是一张播放器截图。窗口压在树和蓝天上，隔着它仍能看出哪里是绿、哪里是蓝，却看不清每一片叶子；窗口里的歌名又很清楚。后来每当我们以为“这次够透明了”，把便签往有文字或花纹的地方一拖，就会发现还差哪一项。下面按几个改变实现方向的节点，记录当时看到的现象和取舍。
 
 1. **先是黄纸，后来成了白纸。** 打开亚克力以后，用户自己吸取的黄色纸面还盖在背景上。给玻璃单独设一套中性色，黄色终于消失了，可窗口看起来又像蒙了一层白纸。把整窗透明度往下调，倒计时和标题也跟着变淡。这一步让我们保留了普通模式的配色，同时把“背景有多透”和“文字有多清楚”当成两个绘制问题处理。
-2. **第一个让人满意的效果，只出现在标题栏。** 我们先做了独立的 `acrylic_preview.pyw`。有一版预览确实透了，后面 Codex 窗口里的字却清楚到能和便签文字叠在一起读。后来试 Windhawk，调色盘标题栏左边透出壁纸的绿，右边透出便签的浅黄，恰好就是想要的效果。偏偏标题栏下面还是白的，后面的主面板还是黄的。这张图帮我们缩小了问题范围：系统能把标题栏做成玻璃，接下来要解决的是 Tk 自己绘制的内容区。
+2. **第一个让人满意的效果，只出现在标题栏。** 我们先做了独立的 `acrylic_preview.pyw`。有一版预览确实透了，后面背景窗口里的字却清楚到能和便签文字叠在一起读。后来试 Windhawk，调色盘标题栏左边透出壁纸的绿，右边透出便签的浅黄，恰好就是想要的效果。偏偏标题栏下面还是白的，后面的主面板还是黄的。这张图帮我们缩小了问题范围：系统能把标题栏做成玻璃，接下来要解决的是 Tk 自己绘制的内容区。
 3. **滑块从 99 到 100，像突然换了一扇窗。** 大部分时候，拖透光度和模糊程度都看不出多少变化；偏偏最后一格变化很大。99 柔和、偏浅，100 明显更透。后来调整时还出现过两档效果反过来，以及明明选中“高透”却两档都像云母。最终留下“云母”和“高透”两个选项。验证时，把同一块有颜色的背景放到窗后，来回切换两次，比看单选框勾在哪边更能发现问题。
 4. **灰块消失了，鼠标也漏过去了。** 原本灰色的列表和按钮虽然突兀，整块都能点。把背景像素抠掉以后，点在字的笔画上有效，点在笔画旁边却可能选中桌面。尤其是三个点菜单，要瞄准其中一个小点才能打开。把灰色点击面放回去，操作恢复了，玻璃又被盖住。这就是最终保留整块 Tk 控件接鼠标、另用一层画可见文字的来由。测试还要把调色盘盖在便签上再点一次，因为曾经连调色盘里的按钮都接不到点击。
 5. **四角真圆了，两种玻璃也真白了。** 试圆角前，我们先备份了已经认可的方角版本。第一次改原生边框，编译通过，两档都能启动，读回来的 DWM 圆角属性也正确。用户一发截图就能看出遗漏：两种材质都成了白底。于是先恢复旧背景程序，再用红蓝细条纹做对照。连测量本身都走过一次弯路：拿窗口上方的颜色对比下方两个角，把窗底阴影误判成了方边。改用下边缘附近、同一阴影里的像素作参照，才看清弧线。最后保留无边框背景程序，让云母、高透各自同时通过四角和透色两项检查。
@@ -88,7 +120,25 @@ For missing text, check `%APPDATA%\DailyPlanner\glass_text_error.log`. For a hos
 
 ## 窗口分层与坐标
 
-主面板由三个独立的 Windows 窗口叠成，每个窗口都有自己的句柄（`HWND`）。布局由 Tk 管理：一个按钮在屏幕上占多大的矩形，就用这块矩形接收点击，也用它定位可见的按钮文字。调色盘、日报和设置是另外的对话框。
+主面板由三个独立的 Windows 窗口叠成一个精准同步的“三明治架构”，每个窗口都有自己的系统句柄（`HWND`）：
+
+```text
+┌─────────────────────────────────────────────────────────────────┐
+│ 1. 顶层：鼠标输入层  - Tkinter 主窗口 (不透明度 0.01)            │
+│    • 负责接收所有点击、拖动、按钮 hover 与窗口缩放              │
+│    • 视觉上完全透明，但保留了控件完整的鼠标响应面积             │
+├─────────────────────────────────────────────────────────────────┤
+│ 2. 中层：高清绘制层  - Python GlassText 分层窗口 (WS_EX_LAYERED) │
+│    • 使用 Pillow 预乘 Alpha 绘制超清文字、倒计时环与对勾图标    │
+│    • 彻底解决 Tkinter 文字透明边缘泛白刺眼的难题                │
+│    • 开启鼠标完全穿透 (WS_EX_TRANSPARENT)，只负责视觉呈现        │
+├─────────────────────────────────────────────────────────────────┤
+│ 3. 底层：毛玻璃背景层 - C# WinForms 宿主 (DWM API)              │
+│    • 负责调用系统级 DWM 硬件加速渲染云母 (Mica) 与高透亚克力    │
+│    • 实现真正的 Windows 11 系统级圆角 (DWMWCP_ROUND)            │
+│    • 毫秒级跟随主窗口移动，绝不发生错位或遮挡                   │
+└─────────────────────────────────────────────────────────────────┘
+```
 
 | 从前到后 | 实现 | 职责 |
 | --- | --- | --- |
