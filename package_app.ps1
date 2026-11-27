@@ -21,7 +21,7 @@ if (-not (Test-Path -LiteralPath (Join-Path $nativeOutput 'AcrylicBackdropHost.e
     throw 'The Windows acrylic backdrop host executable was not produced.'
 }
 
-& $pythonPath -m pip install --user pyinstaller pystray pillow
+& $pythonPath -m pip install -r (Join-Path $appDirectory 'requirements-build.txt')
 if ($LASTEXITCODE -ne 0) { throw 'Could not install packaging dependencies.' }
 
 New-Item -ItemType Directory -Path $releaseDirectory -Force | Out-Null

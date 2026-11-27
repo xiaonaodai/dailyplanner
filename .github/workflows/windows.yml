@@ -1,0 +1,115 @@
+name: Windows CI and release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          architecture: x64
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Check release tag matches installer version
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          $text = Get-Content DailyPlanner.iss -Raw
+          $version = [regex]::Match($text, '#define MyAppVersion "([^"]+)"').Groups[1].Value
+          if (!$version -or $env:RELEASE_TAG -cne "v$version") {
+            throw "Tag $env:RELEASE_TAG must match installer version v$version."
+          }
+
+      - name: Check Python syntax
+        run: python -m py_compile timer_note.py timer_note.pyw glass_text.py
+      - name: Install build and test dependencies
+        run: python -m pip install -r requirements-build.txt
+      - name: Run regression tests
+        run: python -m unittest discover -s tests -v
+      - name: Build application and native backdrop
+        run: ./package_app.ps1
+      - name: Verify packaged modules and native helper
+        run: |
+          @'
+          from pathlib import Path
+          from PyInstaller.archive.readers import CArchiveReader
+          app = Path("release/DailyPlanner")
+          archive = CArchiveReader(str(app / "DailyPlanner.exe"))
+          modules = archive.open_embedded_archive("PYZ.pyz").toc
+          assert {"timer_note", "glass_text"}.issubset(modules)
+          host = "native/AcrylicBackdropHost/AcrylicBackdropHost.exe"
+          assert (app / "_internal" / host).read_bytes() == Path("native/AcrylicBackdropHost/rounded-glass/AcrylicBackdropHost.exe").read_bytes()
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw "Packaged module verification failed." }
+      - name: Build installer
+        run: |
+          $compiler = Get-Command ISCC.exe -ErrorAction SilentlyContinue
+          $paths = @(
+            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+            "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe"
+          )
+          $iscc = if ($compiler) { $compiler.Source } else {
+            $paths | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+          }
+          if (!$iscc) { throw "Inno Setup 6 was not found on this runner." }
+          & $iscc /Q ./DailyPlanner.iss
+          if ($LASTEXITCODE -ne 0) { throw "Installer build failed." }
+      - name: Save downloadable installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: DailyPlanner-windows-x64
+          path: release/DailyPlanner-Setup.exe
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: DailyPlanner-windows-x64
+          path: release
+      - name: Create or update draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" --json isDraft > release-state.json 2>/dev/null; then
+            python3 -c 'import json; assert json.load(open("release-state.json"))["isDraft"], "This release is already published. Use a new version tag."'
+            gh release upload "$RELEASE_TAG" release/DailyPlanner-Setup.exe --clobber
+          else
+            gh release create "$RELEASE_TAG" release/DailyPlanner-Setup.exe \
+              --verify-tag --draft --generate-notes --title "DailyPlanner $RELEASE_TAG"
+          fi
+

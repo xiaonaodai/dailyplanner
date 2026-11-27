@@ -100,6 +100,16 @@ The installer will be generated at `release\DailyPlanner-Setup.exe`.
 
 ---
 
+## Automated builds and releases
+
+The workflow in [.github/workflows/windows.yml](.github/workflows/windows.yml) runs on pushes to main, pull requests to main, and manual runs from the Actions tab. It checks Python syntax, runs text-wrapping regression tests, compiles the native backdrop, packages the app and builds the installer on Windows. Download the installer from the successful run's **Artifacts** section within 14 days.
+
+Push a new version tag matching MyAppVersion in DailyPlanner.iss to create a **draft release** with the installer attached. For example, after changing that version to 1.1.1 and committing it, run git tag v1.1.1 and git push origin v1.1.1. Tag/version mismatches fail before packaging. Rerunning a tag build updates its existing draft. A published release requires a new version tag.
+
+GitHub supplies the workflow token automatically. The build has read access, and only the release job has repository contents write access. If Actions is disabled in your repository, enable it under Settings → Actions → General and allow the official actions used by the workflow.
+
+Before publishing the draft, install and check both glass presets, long task names, clicks, layout editing and window dragging on a Windows 11 desktop. Hosted builds check packaging and tests; the final glass appearance needs a desktop check.
+
 ## License
 
 Released under the [MIT License](LICENSE).
@@ -205,6 +215,16 @@ python -m pip install pyinstaller pystray pillow
 生成的安装程序保存在 `release\DailyPlanner-Setup.exe`。
 
 ---
+
+## 自动构建与发布
+
+工作流位于 [.github/workflows/windows.yml](.github/workflows/windows.yml)。推送 main、向 main 提交 Pull Request 或在 Actions 页面手动运行，都会检查 Python 语法、运行换行回归测试、编译毛玻璃背景程序、打包应用并生成安装包。成功后，在该次运行底部的 **Artifacts** 下载，文件保留 14 天。
+
+发布新版本时，先修改 DailyPlanner.iss 的 MyAppVersion 并提交，再推送与它相同的新版本标签。例如版本改为 1.1.1 后，执行 git tag v1.1.1 和 git push origin v1.1.1。流水线会生成带安装包的 **Release 草稿**。标签与安装版本不一致会提前报错；同一标签重跑会更新已有草稿；已经正式发布的版本需要用新标签更新。
+
+GitHub 会自动提供运行令牌。构建步骤使用只读权限，只有创建草稿的任务有仓库内容写入权限。如果仓库关闭了 Actions，请在 Settings → Actions → General 启用，并允许工作流里使用的官方 actions。
+
+正式发布草稿前，请在 Windows 11 桌面安装体验，检查两种材质、长任务换行、按钮点击、布局编辑和整窗拖动。云端构建负责测试和打包，毛玻璃的最终外观需要在桌面上验收。
 
 ## 开源协议
 
