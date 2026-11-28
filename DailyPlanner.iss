@@ -1,5 +1,5 @@
-#define MyAppName "DailyPlanner"
-#define MyAppVersion "1.1.0"
+﻿#define MyAppName "DailyPlanner"
+#define MyAppVersion "1.1.1"
 #define MyAppExeName "DailyPlanner.exe"
 
 [Setup]
@@ -29,9 +29,9 @@ Name: "chinesesimp"; MessagesFile: "ChineseSimplified.isl"
 
 [CustomMessages]
 english.AppShortcutName=DailyPlanner
-chinesesimp.AppShortcutName=今日计划
+chinesesimp.AppShortcutName=浠婃棩璁″垝
 english.LaunchDescription=Launch DailyPlanner
-chinesesimp.LaunchDescription=启动今日计划
+chinesesimp.LaunchDescription=鍚姩浠婃棩璁″垝
 
 [Files]
 Source: "release\DailyPlanner\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -61,3 +61,4 @@ begin
       RaiseException('Could not save the selected app language.');
   end;
 end;
+

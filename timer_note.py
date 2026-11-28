@@ -740,7 +740,8 @@ class TimerNote:
         self.selection_button.configure(text=("取消" if self.selection_mode else "选择")
                                          if language == "zh" else ("Cancel" if self.selection_mode else "Select"))
         self.add_button.configure(text="＋ 添加时间段" if language == "zh" else "＋ Add time block")
-        self.dial.itemconfigure(self.dial_items[2], text="剩余" if language == "zh" else "left")
+        if self.dial_items is not None:
+            self.dial.itemconfigure(self.dial_items[2], text="剩余" if language == "zh" else "Left")
         if self._tray_icon is not None:
             self._tray_icon.title = "今日计划" if language == "zh" else "Today's Plan"
         self._update_delete_button()
@@ -1949,7 +1950,8 @@ class TimerNote:
         if self.dial_items is None:
             image = self.dial.create_image(0, 0, anchor="nw")
             timer = self.dial.create_text(88, 71, text="", font=("Segoe UI", 14, "bold"), fill=INK)
-            label = self.dial.create_text(88, 108, text="剩余", font=(FONT, 9), fill=MUTED)
+            label = self.dial.create_text(88, 108, text="剩余" if self.language == "zh" else "Left",
+                                          font=(FONT, 9), fill=MUTED)
             self.dial_items = (image, timer, label)
         image, timer, label = self.dial_items
         self.last_fraction = fraction
